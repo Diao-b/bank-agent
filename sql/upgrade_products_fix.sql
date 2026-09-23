@@ -1,18 +1,20 @@
 -- ============================================================================
--- upgrade_products_fix.sql —— 理财产品种子修正（幂等）
+-- upgrade_products_fix.sql —— 理财产品种子修正（★幂等 upsert，不清表）
 --
 -- 缺陷：原种子起购 ¥1,000~¥200,000，演示用户（主账户约 4 万）只买得起 1 个，
 --       理财购买/推荐链路形同虚设。
 -- 修正：起购改三档梯度，覆盖 R1/R2/R3 × 短/中/长期，余额 2 万+ 的演示用户
 --       至少可买 5 个产品。
 --
--- 幂等策略：products 无外键引用（information_schema 已核实），整表清空重插；
---           holdings.product_id 仍指向 1~6，重插后 id 不变，历史持仓不受影响。
+-- ★ 幂等策略（P2.3 修正）：原先用 `DELETE FROM products` 整表清空后重插 ——
+--   「看起来幂等」但对**已有数据的库重跑会整表重置**，而且会连带抹掉管理员
+--   在后台调过的 `status`（上下架）。现改为**按主键 upsert**：
+--     · 只覆盖 6 个种子产品的属性，不删任何行；
+--     · 不动 `status`（管理员意图得以保留）；
+--     · `id` 仍是 1~6 → `holdings.product_id` 指向不变，历史持仓不受影响。
 -- ============================================================================
 
 USE bank_agent;
-
-DELETE FROM products;
 
 INSERT INTO products (id, name, term, risk_level, annual_rate, min_amount) VALUES
   -- 低风险 R1：零钱级 + 短期
@@ -23,4 +25,10 @@ INSERT INTO products (id, name, term, risk_level, annual_rate, min_amount) VALUE
   (4, '稳健增利一年', '365天',          2, 3.20,  2000.00),
   -- 高风险 R3：进取型（确认卡附风险提示行）
   (5, '进取90天',    '90天',           3, 4.20,  5000.00),
-  (6, '全球成长精选', '730天',          3, 8.80, 10000.00);
+  (6, '全球成长精选', '730天',          3, 8.80, 10000.00)
+ON DUPLICATE KEY UPDATE
+  name        = VALUES(name),
+  term        = VALUES(term),
+  risk_level  = VALUES(risk_level),
+  annual_rate = VALUES(annual_rate),
+  min_amount  = VALUES(min_amount);

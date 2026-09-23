@@ -12,6 +12,16 @@
 `_extract_card_routes.py` / `_extract_wealth_routes.py`）。
 与 P2.1 的 `run_server.py` 路由分域同性质：都是"跑一次就完成使命"的搬运脚本。
 
+## `cleanup_test_data.py`（1 个，P2.3 归档）—— C6 验收期的数据清理
+它是 C6 验收那轮的清理脚本，有两个问题：
+1. 自己手写 `DELETE FROM users ...`，违反「删用户统一走 `profile_db.delete_user_cascade`」的铁律；
+2. 与 `cleanup_test_users.py` 职责重叠 —— 两套删用户入口（CONTRIBUTING 的「唯一入口」原则）。
+
+现在的归属：
+- **测试账号清理** → `scripts/cleanup_test_users.py`（默认 dry-run）。
+- **「C6 验收公告」污染** → 改由 `test_admin_ops.py` **收尾自清**（根治，不再需要事后清理）。
+- **`scene='x'` 非法验证码** → 如今为 0 条，无需清理。
+
 ## 判断标准（下次要归档什么）
 - 一次性：跑完即失效，重跑会出错或造成破坏。
 - 不在任何地方被 import / 调用（`grep -rn "<name>" --include=*.py --include=*.md --include=*.js .`）。

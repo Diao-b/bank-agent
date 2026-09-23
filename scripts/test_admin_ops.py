@@ -21,6 +21,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import profile_db  # noqa: E402
+from mock_bank import db  # noqa: E402
 
 BASE = "http://127.0.0.1:8178"
 ADMIN = {"username": "admin", "password": "admin123"}
@@ -255,6 +256,18 @@ for _uid, _name in ((uid_probe, "c6_probe_" + _stamp), (luid, "c6_lock_" + stamp
         print(f"  [cleanup] 已回收临时账号 {_name}(#{_uid})")
     except Exception as _exc:  # noqa: BLE001
         print(f"  [cleanup] 回收 {_name}(#{_uid}) 失败（不影响验收结论）: {_exc}")
+
+# 收尾：清掉验收群发的公告 —— 否则每跑一次就给**所有用户**的收件箱各塞一条站内信
+# （历史上累积过 132 条「C6 验收公告」）。按标题整体清理，天然自愈。
+try:
+    with db.get_conn() as _c:
+        with _c.cursor() as _cur:
+            _cur.execute("DELETE FROM notifications WHERE title=%s", ("C6 验收公告",))
+            _n = _cur.rowcount
+        _c.commit()
+    print(f"  [cleanup] 已清理「C6 验收公告」通知 {_n} 条")
+except Exception as _exc:  # noqa: BLE001
+    print(f"  [cleanup] 清理公告通知失败（不影响验收结论）: {_exc}")
 
 print()
 print(f"===== 结果：PASS {len(PASS)} / FAIL {len(FAIL)} =====")
