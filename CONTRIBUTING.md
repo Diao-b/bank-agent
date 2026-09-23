@@ -11,13 +11,13 @@
 3. **入口唯一**：同类事只走一个入口（§三 末表）。例如任何收款人解析**必须走** `utils/transfer.resolve_payee`。*理由：两个入口 = 两份规则，迟早不一致。*
 4. **修改半径 ≤2 文件**：一次改动触及 >2 个源文件，**先报告**再动。*理由：超半径通常说明改错了层。*
 5. **新建文件须说明"为什么不是现有域的延伸"**：答不出就并入现有域文件。*理由：防域清单膨胀成新的散乱。*
-6. **新抽域用"惰性 import"**（组 T 先例）：域文件顶层**不** import `mock_bank.main`，共享 helper 在**函数内**惰性 import；路由用 `router = APIRouter()`，main 仅 `include_router`。*理由：顶层 import main 会成环，逼出 `__getattr__` 兼容壳 + "include 必须放末尾"的历史包袱（组 S）。*
+6. **新抽域用"惰性 import"**（组 T 先例）：域文件顶层**不** import `mock_bank.main`，共享 helper 在**函数内**惰性 import；路由用 `router = APIRouter()`，main 仅 `include_router`。*理由：顶层 import main 会成环，逼出 `__getattr__` 兼容壳 + "include 必须放末尾"的历史包袱（组 S）。* Web 端同理（P2.1）：分域进 `routes/<域>.py`，共享 helper 收口 `routes/_common.py`，**域文件禁止 import `run_server`**。
 
 ## 二、变更规则对照表（按改动类型）
 
 | 改动类型 | 允许（这样做） | 禁止（别这样） |
 |---|---|---|
-| **新加接口** | 加在**所属域文件**的 `router`（`utils/card.py` / `subscription.py` / `wealth.py`）；读端点加在 `mock_bank/main.py` 对应分组 | 为单个接口新建文件；在 `main.py` 里堆业务逻辑 |
+| **新加接口** | 加在**所属域文件**的 `router`（`utils/card.py` / `subscription.py` / `wealth.py`）；Web 端接口加在 `routes/<域>.py`（P2.1）；读端点加在 `mock_bank/main.py` 对应分组 | 为单个接口新建文件；在 `main.py`／`run_server.py` 里堆业务逻辑；在 `routes/` 里 import `run_server` |
 | **新业务规则** | 数值进 `rules.py`；执行逻辑进对应域文件（转账 → `utils/transfer.py`） | 阈值/额度硬编码进路由或 agent |
 | **新业务拒绝分支** | 失败统一走 `fail(message, code=ERR.XXX, action="<动作名>")`；错误码先到 `utils/response_codes.py` 的 `ERR` 加常量（值 == 常量名），`action` 由响应包裹层按路由兜底注入 | 只返回中文文案不带 `code`；在调用点写裸字符串 code（散落即不一致） |
 | **新写端点** | 只写业务；统一响应协议（action/code/message）与**幂等去重**由 `ResponseEnvelopeMiddleware` 在包裹层自动生效，无需在端点里重复实现 | 在端点内部自己拼装协议字段 / 自己做去重（会与包裹层打架） |
@@ -73,6 +73,17 @@
 | `mcp_bridge.py` | MCP ↔ OpenAI function-calling 转换 + 事件 | `get_openai_tools` · `call_mcp_tool_sync` |
 | `user_provision.py` | 用户开户 / 种子数据 | `provision_new_user` · `generate_transactions` |
 | `card_validator.py` · `card_service.py` | 兼容壳（组 K 遗留，仍被 main / provision / seed / test 引用） | re-export |
+
+**Web 路由分域（P2.1 · `routes/`）** —— 拆 `run_server.py` 只为可维护性，**只搬不改**
+
+| 文件 | 职责 | 关键点 |
+|---|---|---|
+| `routes/_common.py` | 跨域共享 helper（唯一共享层） | `_resolve_uid` · `_bank_headers` · `_admin_guard` · `_log_admin` · `WEB_DIR`；★**禁止 import run_server** |
+| `routes/account.py` | 认证 / 注册 / 画像 / 手机绑定 / 会话列表 / 页面 | `/` · `/login` · `/chat` 必须在静态挂载之前 |
+| `routes/wallet.py` | 资产总览 / 收件箱 / 验证码 / 支付密码 / 一次性票据签发 / 实名 | 直连路由须在兜底代理之前 |
+| `routes/admin.py` | 运营管理后台 `/api/admin/*` + `/admin` 页面 | 管理端只写白名单，绝无用户资产修改接口 |
+| `routes/runtime.py` | 数字柜员状态与打断 · 人物形象配置 · 调度器状态 | ★必须在兜底代理之前，否则被转发给 8003 → 404 |
+| `run_server.py` | 装配：chat 链路 + 兜底代理 `/api/{path:path}` + `/fay` 代理 + 静态挂载 + lifespan | ★**include 顺序 = 匹配顺序**；include 块紧邻兜底代理上方 |
 
 **唯一入口（跨域唯一，禁止另起）**
 

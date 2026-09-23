@@ -209,6 +209,13 @@ bank-agent/
 │   ├── prompts.py            # read_agent 系统提示词（注入当天日期）
 │   ├── read_agent.py         # build_read_agent() -> 编译后的图
 │   └── write_flow.py         # build_write_flow() -> 写操作子图（确定性 + 三中断）
+├── run_server.py             # 8178：Web 服务（chat 链路 + 兜底代理 + /fay 代理 + 静态挂载 + lifespan 自检/调度）
+├── routes/                   # Web 路由分域（P2.1）：★具体路由必须排在兜底代理 /api/{path:path} 之前
+│   ├── _common.py            # 跨域共享 helper（_resolve_uid / _bank_headers / _admin_guard / _log_admin / WEB_DIR）
+│   ├── account.py            # 认证 / 注册 / 画像 / 手机绑定 / 会话列表 / 页面（/ · /login · /chat）
+│   ├── wallet.py             # 资产总览 / 收件箱 / 验证码 / 支付密码 / 一次性票据签发 / 实名
+│   ├── admin.py              # 运营管理后台 /api/admin/* 与 /admin 页面
+│   └── runtime.py            # 数字柜员状态与打断 / 人物形象配置 / 调度器状态
 ├── run_cli.py                # 命令行多轮对话（M1 读）
 ├── run_cli_write.py          # 命令行驱动（M2 写，含 get_state/Command(resume) 模式）
 ├── selftest.py               # M1 5 条验收标准自动自测
