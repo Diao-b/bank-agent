@@ -193,6 +193,37 @@ _NAV_PAGES: dict[str, dict] = {
 }
 
 
+# ★ 自动跳转（nav.auto）的判定依据 —— 只看**用户原话是不是"明确要求打开某个页面"**。
+#
+#   修的是什么（真实问题）：原先只要模型调了 navigate_to 就无条件 `auto=True`，
+#   前端收到即 `window.location.hash = nav.to` —— 等于**把用户从对话里踢到另一个页面**。
+#   用户只是**咨询**「可以查看我最近的流水账单吗?」，也被跳去账单页，而他从没要求打开页面。
+#   根因：把"提及了某个功能"（模型很可能调 navigate_to）当成了"要求打开该页面"。
+#
+#   现在的口径：明确指令（打开 / 进入 / 跳转 / 切到 / 回到 / 前往 / 去XX）→ 自动跳；
+#   其余（"可以看看吗""我想了解下"这类咨询）→ **降级为可点提示按钮**（NavHint），
+#   导航权交回用户，对话不被打断。
+_NAV_VERB_RE = re.compile(
+    r"(打开|进入|进去|跳转|切到|切换到|回到|带我去|我要去|我想去|点开|前往|去(?![年过掉世]))"
+)
+_NAV_PAGE_RE = re.compile(
+    r"(账单|流水|明细|转账|汇款|理财|持仓|基金|卡片|银行卡|订阅|会员|"
+    r"安全中心|对话|聊天|首页|主页|额度|消费记录)"
+)
+
+
+def _explicit_page_request(text: str) -> bool:
+    """用户是否**明确要求打开某个页面**（而不是只是在问一个问题）。
+
+    「打开我的账单详情」→ True；「去转账」→ True；
+    「可以查看我最近的流水账单吗?」→ False（咨询 —— 不该劫持导航，只给可点提示）。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_NAV_VERB_RE.search(t) and _NAV_PAGE_RE.search(t))
+
+
 def _detect_nav(text: str) -> dict | None:
     """从回复内容推断"可以去哪个页面看详情"，供前端在气泡下渲染跳转入口。
 
@@ -300,16 +331,20 @@ class ChatReq(BaseModel):
 # ★ ProfileUpdate 模型随「账号域」迁到 routes/account.py（P2.1 路由分域）
 
 
-def _reply_payload(reply: str, driver: MainDriver) -> dict:
+def _reply_payload(reply: str, driver: MainDriver, user_text: str = "") -> dict:
     """把 driver 返回文本转成前端 payload（与 POST /api/chat 的返回结构完全一致）。
 
     SSE 的 done 事件直接携带同一结构 —— 前端收到后走和 POST 一模一样的渲染分支。
+    user_text：本轮用户原话。**只有它明确要求打开页面时**才允许 nav.auto（自动跳转）。
     """
     payload = parse_reply(reply or "")
-    # LLM 结构化导航意图（navigate_to 工具）→ 自动跳转，优先级高于关键词 _detect_nav
+    # LLM 结构化导航意图（navigate_to 工具），优先级高于关键词 _detect_nav
     agent_nav = _extract_agent_nav(driver)
     if agent_nav:
-        agent_nav["auto"] = True
+        # ★ 自动跳转必须由「用户明确要求打开页面」授权。否则只渲染可点提示按钮，
+        #   绝不把正在咨询的用户从对话里踢走（原先无条件 auto=True）。
+        if _explicit_page_request(user_text):
+            agent_nav["auto"] = True
         payload["nav"] = agent_nav
     payload.setdefault("reply", reply or "")
     # ★ 全站 0 emoji 0 icon：模型偶发在回复里带 emoji（实测出现过「都给您查好了 👇」），
@@ -399,7 +434,7 @@ def chat(req: ChatReq, request: Request):
                 reply = driver.chat(req.message)
         except Exception as exc:  # noqa: BLE001  LLM/银行服务的错误统一透出给前端
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-    payload = _reply_payload(reply, driver)
+    payload = _reply_payload(reply, driver, user_text=req.message)
     # 审计项 M1：真实对话落库（此前只进 LangGraph 的 SQLite checkpoint，MySQL 完全不知情）
     # 落库失败只记日志、不影响本轮对话，避免 DB 抖动把聊天整条链路打断
     _persist_chat(req.thread_id, req.message, reply, uid)
@@ -442,6 +477,7 @@ async def chat_stream(req: ChatReq, request: Request):
         runner=lambda d: d.chat(req.message),
         after=lambda reply, payload: _persist_chat(req.thread_id, req.message, reply, uid),
         dh_on=dh_on,
+        user_text=req.message,
     )
 
 
@@ -451,11 +487,13 @@ async def chat_stream(req: ChatReq, request: Request):
 # --------------------------------------------------------------------------- #
 def _sse_response(*, thread_id: str, driver: MainDriver, lock: threading.Lock,
                   uid: int, token: str | None, runner, after=None,
-                  first_events: tuple[dict, ...] = (), dh_on: bool = False) -> StreamingResponse:
+                  first_events: tuple[dict, ...] = (), dh_on: bool = False,
+                  user_text: str = "") -> StreamingResponse:
     """把「一次同步 driver 调用」包成 SSE 流。
 
     runner(driver) -> reply 文本；after(reply, payload) 做落库等收尾（异常只记日志）。
     first_events：在 worker 启动前先发的帧（如告知前端本轮用的 thread_id）。
+    user_text：本轮用户原话，用于判定是否允许 nav.auto（自动跳转）。
     """
     # 事件队列：run_server 工作线程（同步、持有 driver 锁）与 SSE 生成器之间桥接
     events: queue.Queue = queue.Queue()
@@ -479,7 +517,7 @@ def _sse_response(*, thread_id: str, driver: MainDriver, lock: threading.Lock,
                 # scope_ctx：让 write_flow / MCP 工具 emit 的事件带上本 thread 标记
                 with _login_ctx(uid, token), event_bus.scope_ctx(thread_id):
                     reply = runner(driver)
-            payload = _reply_payload(reply, driver)
+            payload = _reply_payload(reply, driver, user_text=user_text)
             _emit({"type": "done", "payload": payload})
             if after is not None:
                 try:
@@ -668,6 +706,7 @@ def submit_task(req: SubmitTaskReq, request: Request):
         after=_after,
         first_events=({"type": "thread", "thread_id": tid, "conversation_id": conv_id},),
         dh_on=dh_on,
+        user_text=user_text,
     )
 
 
