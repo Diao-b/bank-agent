@@ -922,6 +922,10 @@ def auth_login(req: _AuthReq):
 
 @app.post("/api/auth/guest")
 def auth_guest(req: _AuthReq):
+    # ★ 安全修复（审计 P0.1）：演示游客通道是"认证后门"——无需任何凭证即为默认账号签发 token。
+    #   仅开发态（ENV=dev 且 DEV_ALLOW_GUEST=1）可用；生产环境无条件关闭，返回 403。
+    if not config.auth_guest_enabled():
+        raise HTTPException(status_code=403, detail="演示游客通道已关闭，请使用账号登录")
     # 单账号演示：游客映射到默认账号（无需注册）
     uid = config.DEFAULT_USER_ID
     return {
@@ -2338,6 +2342,9 @@ def _bank_health() -> bool:
 
 
 # 启动即补齐认证相关表结构（幂等），避免首次登录 500
+# ★ 安全修复（审计 P0.1）：生产环境若仍用默认 AUTH_SECRET / 默认管理员密码，直接拒绝启动，
+#   防止 token 伪造与默认凭据在生产暴露。该检查不被下方 try 捕获（刻意 fail-fast）。
+config.validate_auth_config()
 try:
     profile_db.ensure_auth_schema()
     profile_db.ensure_admin_account()   # C5：管理员种子账号 admin / admin123

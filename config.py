@@ -105,6 +105,48 @@ AUTH_SECRET: str = _get("AUTH_SECRET", "dev-bank-agent-secret-change-in-prod")
 #   确要单机无登录演示时，在 .env 显式设 BANK_ALLOW_ANON=1。
 BANK_ALLOW_ANON: bool = (_get("BANK_ALLOW_ANON", "0") or "0").lower() not in ("0", "false", "no")
 
+# ---------------------------------------------------------------- 运行环境与演示开关
+# 运行环境：dev / test / production。非 dev 环境会强制收紧安全配置（见 validate_auth_config）。
+ENV: str = (_get("ENV", "dev") or "dev").strip().lower()
+# 演示游客通道（/api/auth/guest）开关：仅开发态生效，生产环境无条件关闭。
+# ★ 安全修复（审计 P0.1）：该端点无需任何凭证即为默认演示账号签发 token，是典型"认证后门"。
+#   默认在 dev 开启（演示与基线回归需要），但 production 下即使误设为 1 也会被 auth_guest_enabled() 强制关闭。
+#   若要连开发态也关闭，在 .env 显式设 DEV_ALLOW_GUEST=0（此时基线 login_guest 用例需同步改为真实登录）。
+DEV_ALLOW_GUEST: bool = (_get("DEV_ALLOW_GUEST", "1") or "1").lower() not in ("0", "false", "no")
+# 管理员种子账号密码（ensure_admin_account 使用）。生产必须在 .env 覆盖为强密码。
+ADMIN_PASSWORD: str = _get("ADMIN_PASSWORD", "admin123")
+# 存量无密码用户的演示回填密码（ensure_auth_schema 使用）。生产建议在 .env 覆盖。
+DEFAULT_DEMO_PASSWORD: str = _get("DEFAULT_DEMO_PASSWORD", "123456")
+
+
+def auth_guest_enabled() -> bool:
+    """游客通道是否开启：仅 dev 环境且显式允许时。生产环境永远 False。"""
+    return ENV == "dev" and DEV_ALLOW_GUEST
+
+
+def validate_auth_config() -> None:
+    """生产环境安全基线：非法配置直接拒绝启动，防止关键后门在生产暴露。
+
+    覆盖两项审计 P0.1 风险：
+      - AUTH_SECRET 仍为硬编码默认值/空 → token 可被任意伪造；
+      - 管理员仍使用默认密码 admin123 → 默认凭据。
+    仅 ENV=production 时强制；dev / test 跳过（演示与基线回归需要宽松配置）。
+    """
+    if ENV != "production":
+        return
+    default_secret = "dev-bank-agent-secret-change-in-prod"
+    if not AUTH_SECRET or AUTH_SECRET == default_secret:
+        raise RuntimeError(
+            "生产环境（ENV=production）禁止使用默认/空 AUTH_SECRET，"
+            "请在 bank-agent/.env 设置强随机 AUTH_SECRET，否则拒绝启动。"
+        )
+    if ADMIN_PASSWORD == "admin123":
+        raise RuntimeError(
+            "生产环境（ENV=production）禁止使用默认管理员密码 admin123，"
+            "请在 bank-agent/.env 设置 ADMIN_PASSWORD。"
+        )
+
+
 # M2 阶段 write_flow 独立测试用的 sqlite checkpoint 文件（M3 嵌入主图后不再需要）
 WRITE_TEST_DB: str = str(BASE_DIR / "write_test.db")
 

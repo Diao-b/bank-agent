@@ -749,7 +749,7 @@ def ensure_auth_schema() -> None:
                     uname = row["username"] or ("user%d" % row["id"])
                     cur.execute(
                         "UPDATE users SET username=%s, password_hash=%s WHERE id=%s",
-                        (uname, hash_password("123456"), row["id"]),
+                        (uname, hash_password(config.DEFAULT_DEMO_PASSWORD), row["id"]),
                     )
         conn.commit()
 
@@ -809,7 +809,6 @@ def create_user(username: str, password: str) -> dict | None:
 
 
 ADMIN_USERNAME = "admin"
-ADMIN_DEFAULT_PASSWORD = "admin123"
 
 
 class DeleteUserError(RuntimeError):
@@ -966,7 +965,7 @@ def ensure_admin_account() -> None:
                 cur.execute(
                     "INSERT INTO users (name, username, password_hash, role) "
                     "VALUES (%s, %s, %s, 'admin')",
-                    ("管理员", ADMIN_USERNAME, hash_password(ADMIN_DEFAULT_PASSWORD)),
+                    ("管理员", ADMIN_USERNAME, hash_password(config.ADMIN_PASSWORD)),
                 )
                 print("[auth] 已创建管理员种子账号 admin / admin123（演示环境）")
             else:
