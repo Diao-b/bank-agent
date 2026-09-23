@@ -166,6 +166,10 @@
 | 轨道判定双标签 | resolver `insite/cross_bank` vs route `insite/offsite`，校验时机不同 | 已收口谓词 `is_insite_track`；改标签破坏 API 契约 |
 | `agent/write_flow.py` | 单文件承载写流程（≈1402 行） | 强行拆会制造过度解耦，留 |
 | `profile_db.py` + `user_provision.py` | 各 >400 行 | 职责不同（画像/令牌 vs 开户），留 |
+| 登录 token 无主动吊销 | `issue_token`（HMAC-SHA256 + 24h TTL）**不带版本号** → 没有「改密 / 登出即失效」能力；旧 token 一直有效到过期 | ★**当前无利用路径**：代码里**不存在**「修改登录密码」入口（`set_password` 是**支付密码**，走独立表 `paypass_*`；锁定已由 `_resolve_uid` 的 `get_user_locked` 拦掉）。**一旦要加改密 / 强制登出 / 会话列表踢人，必须同时加 `users.token_ver` 并在 `issue_token`/`resolve_user_id` 两侧比对**，否则等于没吊销 |
 
 ---
 **版本记录**：v1.0 · 2026-09-11 · 首版（固化合并式重构成果，约束后续变更）。
+v1.1 · 2026-09-23 · P0–P2 加固同步（认证后门 / 写操作一次性票据 / 赎回资金闭环 / 迁移版本化 /
+后台调度 / 连接池 / 进程内状态 / 幂等键前置 / 路由分域 / 测试与脚本治理），并新增
+「验收脚本净副作用 0」与「Web 路由分域」两条约束。
