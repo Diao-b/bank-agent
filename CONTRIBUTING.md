@@ -53,6 +53,8 @@
 | `subscription.py` | 订阅域：周期识别 + 状态机 + 订阅路由 | `discover_candidates` · `contract_subscription` |
 | `wealth.py` | 理财域：产品/持仓/买入/赎回 + 路由 | `buy_product` · `redeem` |
 | `settlement_engine.py` | 跨行清算 + 订阅扣款引擎 | `process_due_settlements` · `run_due_deductions` · `process_housekeeping` |
+| `scheduler.py` | 后台调度（P1.2）：独立周期任务驱动上述引擎，替代纯「读接口惰性触发」 | `start` · `stop` · `run_once` · `status` |
+| `op_auth.py` | 写操作一次性票据（P0.2）：签发 / 消费 / FastAPI 依赖 | `issue_op_token` · `consume_op_token` · `RequireOpToken` |
 | `verify_codes.py` | 短信验证码（**作废码**语义） | `issue_code` · `check_code` |
 | `paypass.py` | 支付密码（hash / 锁定 / 通过标记） | `verify` · `has_passed` · `set_password` |
 | `inbox.py` | 站内通知 / 收件箱 | `push_notification` · `mark_read` |

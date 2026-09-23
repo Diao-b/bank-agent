@@ -43,7 +43,7 @@ from mock_bank import db  # 连接收口到单一源（组 R）
 import profile_db  # 用户画像数据层（MySQL bank_agent）
 import rules  # C6：风控参数单源（system_config）
 from agent.driver import MainDriver
-from utils import event_bus, inbox, mcp_client, paypass, security
+from utils import event_bus, inbox, mcp_client, paypass, scheduler, security
 from utils import op_auth as _op_auth
 from utils.user_provision import provision_new_user
 from utils.digital_human import digital_human  # 数字柜员桥接层（Fay 渲染端，独立进程）
@@ -2291,6 +2291,15 @@ async def appearance_upload_background(request: Request):
     })
 
 
+@app.get("/api/housekeeping")
+def housekeeping_status():
+    """后台调度器状态（P1.2，只读）：间隔 / 轮次 / 最近一轮的补扣·清算汇总。
+
+    ★ 必须定义在兜底代理 /api/{path:path} 之前，否则会被转发给 mock_bank → 404。
+    """
+    return {"ok": True, **scheduler.status()}
+
+
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_api(path: str, request: Request):
     target = f"{config.BANK_API_BASE}/api/{path}"
@@ -2456,7 +2465,11 @@ try:
     async def _lifespan(_app: FastAPI):
         run_mcp_startup_selfcheck()   # 内部开线程，立即返回，不阻塞启动
         _knowledge_warmup()           # ★ 预热 DNS + 向量表（内部开线程）——实测首次解析要 ~11s
-        yield
+        scheduler.start()             # P1.2：独立调度（订阅到期补扣 + 跨行到期清算）
+        try:
+            yield
+        finally:
+            scheduler.stop()
 
     app.router.lifespan_context = _lifespan
 except Exception as _exc:  # noqa: BLE001

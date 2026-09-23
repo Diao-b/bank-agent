@@ -126,6 +126,13 @@ OP_TOKEN_TTL_SECONDS: int = int(_get("OP_TOKEN_TTL_SECONDS", "300"))
 ALLOW_TEST_INJECT: bool = (
     (_get("ALLOW_TEST_INJECT", "1") or "1").lower() not in ("0", "false", "no")
 ) and ENV != "production"
+# P1.2 后台调度器：把「订阅到期补扣 + 跨行到期清算」从读接口惰性触发升级为独立周期任务。
+#   默认开（用户不访问也能按时扣款 / 到账 / 退票）；只读演示或特定测试可置 HOUSEKEEPING_ENABLED=0。
+HOUSEKEEPING_ENABLED: bool = (_get("HOUSEKEEPING_ENABLED", "1") or "1").lower() not in ("0", "false", "no")
+#   调度间隔（秒）。到期语义按「日」计（next_due / expected_at），60s 足够且开销低。
+HOUSEKEEPING_INTERVAL_SECONDS: int = int(_get("HOUSEKEEPING_INTERVAL_SECONDS", "60"))
+#   单轮最多处理的「到期订阅用户」数（防异常数据导致单轮失控）。
+HOUSEKEEPING_BATCH_USERS: int = int(_get("HOUSEKEEPING_BATCH_USERS", "500"))
 
 
 def auth_guest_enabled() -> bool:
