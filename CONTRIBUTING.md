@@ -62,6 +62,7 @@
 | `subscription.py` | 订阅域：周期识别 + 状态机 + 订阅路由 | `discover_candidates` · `contract_subscription` |
 | `wealth.py` | 理财域：产品/持仓/买入/赎回 + 路由 | `buy_product` · `redeem` |
 | `settlement_engine.py` | 跨行清算 + 订阅扣款引擎 | `process_due_settlements` · `run_due_deductions` · `process_housekeeping` |
+| `digital_human.py` | 数字柜员桥接（Fay）：喂话 / 打断 / 探活；★含「打断即闭嘴」状态 | `speak` · `stop` · `interrupt` · `unmute` |
 | `scheduler.py` | 后台调度（P1.2）：独立周期任务驱动上述引擎，替代纯「读接口惰性触发」 | `start` · `stop` · `run_once` · `status` |
 | `op_auth.py` | 写操作一次性票据（P0.2）：签发 / 消费 / FastAPI 依赖 | `issue_op_token` · `consume_op_token` · `RequireOpToken` |
 | `verify_codes.py` | 短信验证码（**作废码**语义） | `issue_code` · `check_code` |
@@ -100,6 +101,17 @@
 | 知识库（Agent 事实源） | `docs/knowledge/*.md`（★**代码未接线**） | `agaent/docs/knowledge/` |
 
 > 文件存储：**本项目无上传/文件存储模块**；若新增，按 §二「新外部服务」建 `utils/<svc>_client.py`。
+
+> ★★ **数字人「打断」契约**（动 `utils/digital_human.py` 或 `web/index.html` 语音相关代码必读）：
+> 打断必须三件事一起做，缺一件就会「点完打断它还在念 / 把自己的声音录进用户输入」：
+> ① 后端 `interrupt()` = `stop()` **+ 置位 `_muted`（闭嘴）** —— 只调 `stop()` 不够，
+>    在途回复的 `done` 帧到达时会停下又念一遍；`speak()` 在闭嘴期一律跳过。
+> ② `_muted` 只能由**下一条用户消息**解除（`run_server._dh_interrupt()` → `unmute()`），
+>    否则打断一次就永远哑了。
+> ③ 前端打断后要有**余音衰减期**（`VD_ECHO_GUARD_MS`，Fay 缓冲音频 + 音箱余响），
+>    期内识别结果一律丢弃；且**普通模式**（非语音对话）也必须过自听过滤 ——
+>    那里没有 `VoiceDialogBar`，静默丢弃必须给可见提示。
+> 验收：`scripts/test_dh_interrupt.py`（28/28）。
 
 ## 四、安全不变式（任何变更不得破坏）
 
