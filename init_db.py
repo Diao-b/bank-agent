@@ -50,6 +50,7 @@ UPGRADE_ORDER = (
     "upgrade_idempotency.sql",
     "upgrade_delete_cascade.sql",
     "upgrade_op_auth.sql",
+    "upgrade_runtime_state.sql",
 )
 
 # --------------------------------------------------------------------------- #

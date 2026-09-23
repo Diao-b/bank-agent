@@ -8,7 +8,7 @@ utils/paypass.py —— 支付密码（B 体系：操作安全第二要素）
   2. 错 3 次锁定至当日 23:59:59（locked_until），锁定状态直接拒绝；
   3. ★含失败的每次校验都留痕（operation_logs，action=pay_password_verify），
      安全中心/后台管理可查；
-  4. 通过校验后仅在进程内放置一个短 TTL 的"已通过"标记（uid 维度），
+  4. 通过校验后放置一个短 TTL 的"已通过"标记（uid 维度，**存 DB 表 paypass_passed**，P1.4），
      write_flow 的 verify 队列据此放行 —— 密码本身绝不进入 LangGraph 状态 /
      chat_messages / checkpoint（对话里只落 "[已输入支付密码]"）。
 """
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import time
 from datetime import datetime
 
 import pymysql
@@ -30,8 +29,9 @@ import rules  # C6：支付密码最大尝试次数运行时从 system_config �
 
 _PASS_TTL_SECONDS = 120  # 通过标记有效期：足够走完 resume 流程，又不留长期后门
 
-# 进程内"支付密码已通过"标记：uid -> expiry_ts
-_PASSED: dict[int, float] = {}
+# ★ P1.4：通过标记从「进程内 dict」迁到 DB（paypass_passed）—— 多 worker 下 verify 与 resume
+#   可能落在不同进程，进程内标记会"丢"，导致已核验却还要重输。改 DB 后跨进程一致；
+#   语义不变：短 TTL + **一次性消费**（has_passed 原子删除即消费）。
 
 
 def _conn():
@@ -71,19 +71,29 @@ def is_locked(user_id: int) -> bool:
 
 
 def mark_passed(user_id: int) -> None:
-    _PASSED[int(user_id)] = time.time() + _PASS_TTL_SECONDS
+    """放置"已通过"标记：覆盖写 + 顺手清理全表过期行（P1.4：DB 共享）。"""
+    db.execute("DELETE FROM paypass_passed WHERE expires_at <= NOW()")
+    db.execute(
+        "INSERT INTO paypass_passed (user_id, expires_at) "
+        "VALUES (%s, DATE_ADD(NOW(), INTERVAL %s SECOND)) "
+        "ON DUPLICATE KEY UPDATE expires_at=VALUES(expires_at)",
+        (int(user_id), _PASS_TTL_SECONDS),
+    )
 
 
 def has_passed(user_id: int) -> bool:
-    exp = _PASSED.get(int(user_id))
-    if not exp:
-        return False
-    if time.time() > exp:
-        _PASSED.pop(int(user_id), None)
-        return False
-    # 一次性消费：标记用过即失效（每个 verify 队列项只放行一次）
-    _PASSED.pop(int(user_id), None)
-    return True
+    """消费"已通过"标记：未过期则**原子删除并返回 True**（一次性），否则 False。"""
+    with _conn() as conn:
+        try:
+            with conn.cursor() as c:
+                c.execute("DELETE FROM paypass_passed WHERE user_id=%s AND expires_at > NOW()",
+                          (int(user_id),))
+                n = c.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return n > 0
 
 
 def _log(user_id: int, ok: bool, detail: str) -> None:

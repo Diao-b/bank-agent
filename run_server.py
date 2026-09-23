@@ -43,7 +43,7 @@ from mock_bank import db  # 连接收口到单一源（组 R）
 import profile_db  # 用户画像数据层（MySQL bank_agent）
 import rules  # C6：风控参数单源（system_config）
 from agent.driver import MainDriver
-from utils import event_bus, inbox, mcp_client, paypass, scheduler, security
+from utils import event_bus, inbox, login_guard, mcp_client, paypass, scheduler, security
 from utils import op_auth as _op_auth
 from utils.user_provision import provision_new_user
 from utils.digital_human import digital_human  # 数字柜员桥接层（Fay 渲染端，独立进程）
@@ -883,36 +883,29 @@ def _bank_headers(req: Request | None) -> dict:
     return out
 
 
-# ---- 登录防爆破（审计 R5）：同账号连续失败 5 次锁 15 分钟（进程内计数）----
-_LOGIN_FAILS: dict[str, dict] = {}
-_LOGIN_MAX_FAILS, _LOGIN_LOCK_SECONDS = rules.LOGIN_MAX_FAILS, rules.LOGIN_LOCK_SECONDS
+# ---- 登录防爆破（审计 R5）：同账号连续失败 N 次锁 M 分钟 ----
+# ★ P1.4：计数与锁定从「进程内 dict」迁到 DB（login_attempts）—— 多 worker 下不再被稀释。
+#   （原先 _LOGIN_FAILS 是进程内 dict：N 个 worker = 放宽 N 倍。）
 
 
 @app.post("/api/auth/login")
 def auth_login(req: _AuthReq):
-    import time as _time
     username = (req.username or "").strip()
-    fail = _LOGIN_FAILS.get(username)
-    if fail and fail["until"] > _time.time():
-        wait = int((fail["until"] - _time.time()) / 60) + 1
-        raise HTTPException(status_code=429, detail=f"失败次数过多，请约 {wait} 分钟后再试")
+    locked_min = login_guard.locked_remaining_minutes(username)
+    if locked_min is not None:
+        raise HTTPException(status_code=429, detail=f"失败次数过多，请约 {locked_min} 分钟后再试")
     res = profile_db.authenticate(username, req.password or "")
     if isinstance(res, dict) and res.get("error") == "locked":
         # C6：管理员锁定的账号 —— 明确拒绝（验收：锁定用户 → 该用户登录被拒）
         raise HTTPException(status_code=403, detail="账号已被锁定，请联系管理员或柜台处理")
     if not res:
-        n = (fail["n"] + 1) if fail else 1
-        if n >= _LOGIN_MAX_FAILS:
-            _LOGIN_FAILS[username] = {"n": n, "until": _time.time() + _LOGIN_LOCK_SECONDS}
+        n, locked = login_guard.record_failure(
+            username, rules.LOGIN_MAX_FAILS, rules.LOGIN_LOCK_SECONDS)
+        if locked:
             raise HTTPException(status_code=429, detail="失败次数过多，账号已临时锁定 15 分钟")
-        _LOGIN_FAILS[username] = {"n": n, "until": 0}
-        raise HTTPException(status_code=401, detail=f"用户名或密码错误（还可尝试 {_LOGIN_MAX_FAILS - n} 次）")
-    _LOGIN_FAILS.pop(username, None)
-    if isinstance(res, dict) and res.get("error") == "locked":
-        # C6：管理员锁定的账号 —— 明确拒绝（验收：锁定用户 → 该用户登录被拒）
-        raise HTTPException(status_code=403, detail="账号已被锁定，请联系管理员或柜台处理")
-    if not res:
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+        raise HTTPException(status_code=401,
+                            detail=f"用户名或密码错误（还可尝试 {rules.LOGIN_MAX_FAILS - n} 次）")
+    login_guard.clear_failures(username)
     # C5：token payload 携带 role；admin 登录后前端据此默认跳 /admin
     role = profile_db.get_user_role(res["user_id"]) or "user"
     return {
@@ -2457,12 +2450,35 @@ def run_mcp_startup_selfcheck() -> None:
     threading.Thread(target=_job, daemon=True, name="mcp-startup-selfcheck").start()
 
 
+# --------------------------------------------------------------------------- #
+#  P1.4：会话 driver 注册表 / SSE 流是**进程内**状态 —— 多 worker 下同一会话可能被路由到
+#  不同进程，导致"确认 / 取消"接不上。这里只做启动告警（不改行为）；本工程按单 worker 部署。
+# --------------------------------------------------------------------------- #
+def warn_if_multiple_workers() -> None:
+    import os as _os
+    import sys as _sys
+    n = _os.environ.get("WEB_CONCURRENCY")
+    if not n:
+        for _i, _a in enumerate(_sys.argv):
+            if _a == "--workers" and _i + 1 < len(_sys.argv):
+                n = _sys.argv[_i + 1]
+            elif _a.startswith("--workers="):
+                n = _a.split("=", 1)[1]
+    try:
+        if n and int(n) > 1:
+            print(f"[warn] 检测到 {n} 个 worker：会话 driver 注册表 / SSE 流为进程内状态，"
+                  f"同一会话跨 worker 可能接不上（确认/取消）。建议单 worker 运行。")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # 挂 lifespan：uvicorn（含 `uvicorn run_server:app` 方式）启动时触发一次自检
 try:
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
+        warn_if_multiple_workers()    # P1.4：多 worker 会话状态告警
         run_mcp_startup_selfcheck()   # 内部开线程，立即返回，不阻塞启动
         _knowledge_warmup()           # ★ 预热 DNS + 向量表（内部开线程）——实测首次解析要 ~11s
         scheduler.start()             # P1.2：独立调度（订阅到期补扣 + 跨行到期清算）

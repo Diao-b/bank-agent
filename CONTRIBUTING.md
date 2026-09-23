@@ -113,6 +113,24 @@
 8) 禁止顺手重构 / 加功能 / 改文案。
 ```
 
+## 六·补、进程内状态清单（P1.4 治理结论）
+
+多 worker / 多实例部署下，「进程内状态」会被进程边界稀释。逐项处置如下：
+
+| 状态 | 位置 | 多 worker 影响 | 处置 |
+|---|---|---|---|
+| 会话 driver 注册表 | `run_server._drivers` | 同一会话被路由到别的 worker → "确认 / 取消"接不上 | ★**本工程按单 worker 部署**；启动时 `warn_if_multiple_workers()` 告警 |
+| SSE 流 / 每会话锁 | `run_server._sse_response` 闭包 | 同上 | 同上 |
+| 登录失败计数 / 锁定 | ~~`_LOGIN_FAILS`~~ → **DB `login_attempts`**（`utils/login_guard.py`） | 原进程内 → N worker 把「N_MAX 次锁定」放宽 N 倍 | ✅ 已迁 DB（跨进程一致） |
+| 支付密码"已通过"标记 | ~~`paypass._PASSED`~~ → **DB `paypass_passed`**（`utils/paypass.py`） | 原进程内 → verify 与 resume 跨 worker 会"丢" | ✅ 已迁 DB（短 TTL + 一次性消费） |
+| 风控参数缓存 | `rules._cache`（5s TTL） | 跨进程 ≤5s 收敛 | 可接受（设计如此） |
+| 请求上下文 uid / token | `utils/security` ContextVar | 每请求设置，线程/协程内隔离 | 可接受 |
+| 数字人事件总线 | `utils/event_bus` / `digital_human` | 进程内 | 单 worker |
+| 连接池 | `mock_bank/db.py`（P1.3） | 进程内各一份池 | 可接受 |
+
+> ★ 新增**安全 / 正确性相关**的进程内状态前先问："多 worker 下还成立吗？"——不成立就落 DB。
+> 验收：`scripts/test_runtime_state.py`（8/8）。
+
 ## 七、规范变更流程
 
 新规则须走 **动议 → 影响评估（列出受影响的域/文件）→ 版本号 + 追加**（见末尾版本记录）。
