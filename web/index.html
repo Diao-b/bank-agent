@@ -6418,6 +6418,9 @@ function App() {
      还有一截尾巴（Fay 已缓冲的音频 + 音箱余响）。这段时间内识别到的
      几乎全是数字人自己的声音，一律丢弃，避免串进用户输入。 */
   const VD_ECHO_GUARD_MS = 700;
+  /* ★ 音频帧停止到达后再留的静默窗口（毫秒）。
+     主判据是"Fay 还在出声"，这个是收尾保险 —— 最后一帧播完到音箱静下来还有余响。 */
+  const VD_AUDIO_TAIL_MS = 500;
   const [vdOn, setVdOn] = useState(() => localStorage.getItem('xb_voice_dialog') === '1');
   const [vdState, setVdState] = useState('idle');   // idle | listening | thinking | speaking
   const vdPhaseRef = useRef('idle');                // 权威阶段（用 ref 防 effect 重跑抖动）
@@ -6445,6 +6448,12 @@ function App() {
   const vdWsRef = useRef(null);         // 旁听 Fay 驱动 WS 的连接
   const vdAudioStartRef = useRef(0);    // 本轮第一帧音频到达时刻
   const vdAudioTotalRef = useRef(0);    // 本轮已到达音频帧的时长累计（毫秒）
+  /* ★★ 播报的**绝对结束时刻**（= 首帧时刻 + Σ已到达帧时长），每来一帧就往后推。
+     这是"数字人是否还在出声"的权威判据 —— 比文本相似度高一个数量级：
+     ASR 把回声啃成「管理页面不是您自己操作以蜘蛛那个电电电」这种半鬼话时，
+     连续命中只有 5 字，任何相似度阈值都会漏；但"它明明还在念"是硬事实。
+     打断后 vdListen() 会清零，随后仍在途的帧会重新起算 → 门禁自动延伸到余音播完。 */
+  const vdAudioEndAtRef = useRef(0);
   const [vdEcho, setVdEcho] = useState(0);   // 本次会话被丢弃的自听条数（>0 时提示用户）
   const [vdLeft, setVdLeft] = useState(0);   // 播报预计剩余秒数（实测音频时长驱动，显示给用户）
 
@@ -6528,9 +6537,21 @@ function App() {
     if (!pool.length) return false;
     for (const b of pool) {
       if (b.includes(a)) return true;                                 // 整句都在播报过的话里
+      /* ★ 例外：整句 =「刚播报过的一段原话」+「很短的追问尾巴」
+         （如「订阅管理页面在哪儿」—— 前 6 字是原话，尾巴「在哪儿」是追问）。
+         那是用户在**引用**它接着问，不是回声；误杀这种会让人说第二遍还被吞掉。 */
+      let pref = 0;
+      while (pref < a.length && b.includes(a.slice(0, pref + 1))) pref++;
+      if (pref >= 4 && a.length - pref >= 1 && a.length - pref <= 4) continue;
       const lcs = vdLcsLen(a, b);
       if (lcs >= 12) return true;                                     // 与播报内容有长片段重合
       if (lcs >= 6 && lcs / a.length >= 0.6) return true;             // 短句但大半来自播报
+      /* ★ 半鬼话兜底（2026-09-24 实测漏网）：ASR 会把回声啃成
+         「管理页面不是您自己操作以蜘蛛那个电电电」—— 前半段是原话、后半段是鬼话，
+         最长公共子串被截断到 5 字左右，上面两档（≥12 / ≥6且占60%）双双落空。
+         补一档「命中段 ≥5 字 且占识别文本 ≥25%」：正常对话很少出现连续 5 字
+         与刚播报内容完全一致，且本判据只在自听时间窗内生效。 */
+      if (lcs >= 5 && lcs / a.length >= 0.25) return true;
       if (a.length >= 12) {                                           // 兜底：字符命中率（仅长文本用）
         const setB = new Set(b);
         let hit = 0;
@@ -6544,8 +6565,17 @@ function App() {
   /* 识别结果：普通模式只追加进输入框；对话模式累积回显 + 打时间戳供静音判定 */
   const speech = useSpeechInput((t) => {
     vdLastAtRef.current = Date.now();
+    /* ★★ 硬门禁：Fay 还在出声（音频帧仍在到达 / 预计结束时刻未到）→
+       识别到的**一律**是它自己的声音，直接丢弃。
+       —— 这是主判据，比文本相似度可靠得多：ASR 会把回声啃成半鬼话，
+          相似度判据必漏，但"它明明还在念"是硬事实。 */
+    if (vdAudioEndAtRef.current
+        && Date.now() < vdAudioEndAtRef.current + VD_AUDIO_TAIL_MS) {
+      setVdEcho((n) => n + 1);
+      return;
+    }
     /* ★ 打断后的余音衰减期：停止指令已发出，但音箱里剩下的还是它自己的声音。
-       这几百毫秒内识别到的内容一律丢弃（不进输入框、不发请求）。 */
+       这段（含"停止指令 → 第一帧还在途"的间隙）内识别到的内容一律丢弃。 */
     if (Date.now() < vdMuteUntilRef.current) { setVdEcho((n) => n + 1); return; }
     if (!vdOn) {
       /* ★ 普通模式同样要防自听：数字人念回复时开麦，会把它的声音识别成"我说的话"
@@ -6576,6 +6606,9 @@ function App() {
     vdLastAtRef.current = 0;
     vdAudioStartRef.current = 0;
     vdAudioTotalRef.current = 0;
+    /* ★ 清零后，若 Fay 仍有在途音频帧，帧处理器会立刻重新起算结束时刻
+       —— 于是"打断后还在念的那截"仍然被硬门禁挡住，而不是靠猜时间。 */
+    vdAudioEndAtRef.current = 0;
     setVdEcho(0);
     setVdLeft(0);
     vdListenAtRef.current = Date.now();      // 自听过滤的时间基准：从"重开麦"算起
@@ -6594,6 +6627,7 @@ function App() {
     vdLastAtRef.current = 0;
     vdAudioStartRef.current = 0;      // 新一轮播报，音频计时清零
     vdAudioTotalRef.current = 0;
+    vdAudioEndAtRef.current = 0;      // 自听硬门禁随之失效（等新帧重新起算）
     if (speechRef.current) speechRef.current.stop();
     vdSetPhase('thinking');
     if (sendTextRef.current) sendTextRef.current(text);
@@ -6662,6 +6696,9 @@ function App() {
         const now = Date.now();
         if (!vdAudioStartRef.current) vdAudioStartRef.current = now;
         vdAudioTotalRef.current += Math.max(0, Number(data.Time) || 0) * 1000;
+        /* ★ 每来一帧就把"播报预计结束时刻"往后推 —— 这就是自听硬门禁的截止线。
+           随时打断也成立：打断后计时清零，仍在途的帧重新起算，门禁自动延伸到余音播完。 */
+        vdAudioEndAtRef.current = vdAudioStartRef.current + vdAudioTotalRef.current;
         vdSpokeAtRef.current = vdAudioStartRef.current;   // 自听过滤的时间基准
         if (vdPhaseRef.current === 'speaking') arm();
       };
