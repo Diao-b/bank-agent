@@ -1,0 +1,40 @@
+# ===== 密钥与本地配置（绝不入库）=====
+.env
+.env.local
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== 本地运行产物 / 数据库 =====
+*.log
+bank.db
+bank.db*
+read_test.db
+read_test.db*
+write_test*.db
+
+# ===== 工程临时目录（非源码）=====
+_reports/
+.shots/
+.test_out/
+.test_trash/
+.test_trash_code_20260907/
+.webpack_cache/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+
+# ===== 助手本地工作记忆（非项目源码）=====
+.workbuddy/
+
+# ===== 前端备份文件 =====
+web/*.bak*
+*.orig
+
+# ===== 微信/第三方 SDK 本地配置（若引入）=====
+node_modules/

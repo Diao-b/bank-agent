@@ -1,0 +1,1344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小微银行 · 运营管理后台</title>
+<!--
+  C6 可运营后台（升级自只读视图）
+  三条铁律：
+  - 管理员写操作全部留痕（admin_logs：who / what / old→new / when）；
+  - 可改范围严格限定白名单（风控参数 / 用户登录与角色 / 产品目录 / 知识库同步 / 公告）；
+  - 用户资产数据（余额 / 流水 / 持仓 / 订阅）禁止管理端修改 —— 界面与接口都不提供。
+  全站 0 emoji 0 icon；黑金体系；金额金色等宽数字。
+-->
+<script src="/vendor/tailwind.js"></script>
+<script src="/vendor/react.js"></script>
+<script src="/vendor/react-dom.js"></script>
+<script src="/vendor/babel.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink:  { 950:'#06090F', 900:'#0A0F18', 850:'#0D131D', 800:'#121A28', 700:'#1A2332', 600:'#263244' },
+          line: { DEFAULT:'rgba(212,160,23,0.14)', soft:'rgba(212,160,23,0.08)' },
+          neon: { DEFAULT:'#00E5C7', dim:'#00C9AE' },
+          gold: { 300:'#F0D590', 400:'#E3C46A', 500:'#D4A017' },
+        },
+        fontFamily: { mono: ['ui-monospace','SFMono-Regular','Consolas','Menlo','monospace'] },
+      }
+    }
+  };
+</script>
+<style>
+  html, body { height: 100%; }
+  body {
+    font-family: "PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    color:#E8E4D8; background-color:#06090F;
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0.05'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+      linear-gradient(to right, rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 220px 220px, 40px 40px, 40px 40px;
+    background-attachment: fixed;
+  }
+  b, strong { font-weight: 600; }
+  .font-mono { font-variant-numeric: tabular-nums; }
+  .scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background:#2A3548; border-radius:6px; }
+  .scroll-thin::-webkit-scrollbar-track { background:transparent; }
+  @keyframes slideUp { from { opacity:0; transform:translateY(10px);} to { opacity:1; transform:translateY(0);} }
+  .slide-up { animation: slideUp .28s ease both; }
+  @keyframes shakeX { 0%,100%{transform:translateX(0);} 20%{transform:translateX(-7px);} 40%{transform:translateX(7px);} 60%{transform:translateX(-5px);} 80%{transform:translateX(5px);} }
+  .shake { animation: shakeX .45s ease-in-out; }
+  .input-gold:focus { border-color:#D4A017 !important; box-shadow: 0 0 0 3px rgba(212,160,23,0.25); outline:none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+/* ------------------------------------------------------------------ 基础 */
+function authHeaders(extra) {
+  const h = Object.assign({}, extra);
+  const t = localStorage.getItem('xb_token');
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+const fmtMoney = n => Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const GoldNum = ({ value, className = '' }) => (
+  <span className={'font-mono tabular-nums text-gold-300 ' + className}>{fmtMoney(value)}</span>
+);
+const ACTION_CN = {
+  transfer:'转账', buy_product:'购买理财', redeem:'赎回持仓', freeze_card:'冻结银行卡',
+  unfreeze_card:'解冻银行卡', cancel_subscription:'取消订阅', verify_send:'发送验证码',
+  verify_check:'校验验证码', pay_password_verify:'支付密码核验', add_payee:'新增收款人',
+  card_apply:'申请银行卡', admin_view_code:'后台查看验证码',
+  config_update:'修改风控参数', user_lock:'锁定用户', user_unlock:'解锁用户',
+  user_reset_paypass:'重置支付密码', user_role:'调整角色', product_update:'更新产品',
+  knowledge_sync_confirm:'确认知识同步', knowledge_rebuild:'重建知识索引', notice_send:'发送系统公告',
+};
+const RESULT_CN = { success:'成功', failed:'失败', not_implemented:'未实现' };
+const STATUS_CN = { unused:'未使用', verified:'已验证', expired:'已过期', void:'已作废' };
+const STATUS_TONE = {
+  unused:   'text-cyan-300 bg-cyan-400/10 border-cyan-400/30',
+  verified: 'text-emerald-300 bg-emerald-400/10 border-emerald-400/30',
+  expired:  'text-slate-400 bg-slate-500/10 border-slate-500/30',
+  void:     'text-rose-300 bg-rose-400/10 border-rose-400/30',
+};
+const ADMIN_ACTION_TONE = {
+  config_update: 'text-gold-300 bg-gold-500/10 border-gold-500/40',
+  user_lock: 'text-rose-300 bg-rose-400/10 border-rose-400/30',
+  user_unlock: 'text-emerald-300 bg-emerald-400/10 border-emerald-400/30',
+  user_reset_paypass: 'text-amber-300 bg-amber-400/10 border-amber-400/30',
+  user_role: 'text-cyan-300 bg-cyan-400/10 border-cyan-400/30',
+  product_update: 'text-cyan-300 bg-cyan-400/10 border-cyan-400/30',
+  knowledge_sync_confirm: 'text-emerald-300 bg-emerald-400/10 border-emerald-400/30',
+  knowledge_rebuild: 'text-cyan-300 bg-cyan-400/10 border-cyan-400/30',
+  notice_send: 'text-gold-300 bg-gold-500/10 border-gold-500/40',
+};
+
+/* API Hook（401 → 回独立登录页） */
+function useApi(url, deps) {
+  const [st, setSt] = useState({ loading: true, data: null, error: null, status: 0 });
+  useEffect(() => {
+    let dead = false;
+    setSt(s => ({ ...s, loading: true, error: null }));
+    fetch(url, { headers: authHeaders() })
+      .then(r => r.json().then(d => ({ ok: r.ok, status: r.status, d })))
+      .then(({ ok, status, d }) => {
+        if (dead) return;
+        if (status === 401) { window.location.href = '/admin/login'; return; }
+        if (!ok) setSt({ loading: false, data: null, error: d.detail || d.error || ('HTTP ' + status), status });
+        else setSt({ loading: false, data: d, error: null, status: 200 });
+      })
+      .catch(() => { if (!dead) setSt({ loading: false, data: null, error: '网络错误', status: 0 }); });
+    return () => { dead = true; };
+  }, deps || []);
+  return st;
+}
+
+/* ------------------------------------------------------------------ 布局原子 */
+const Card = ({ children, className = '' }) => (
+  <div className={'rounded-xl bg-ink-850/80 border border-line slide-up ' + className}
+       style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)' }}>{children}</div>
+);
+const PageTitle = ({ title, sub, right }) => (
+  <div className="flex items-end justify-between mb-4">
+    <div>
+      <h2 className="text-[18px] font-semibold text-slate-100">{title}</h2>
+      {sub && <p className="text-[12px] text-slate-500 mt-1">{sub}</p>}
+    </div>
+    {right}
+  </div>
+);
+const Th = ({ children }) => (
+  <th className="text-left font-medium px-3.5 py-2.5 text-slate-400 text-[11px] tracking-wide whitespace-nowrap">{children}</th>
+);
+const Td = ({ children, className = '' }) => (
+  <td className={'px-3.5 py-2 text-[12px] text-slate-300 ' + className}>{children}</td>
+);
+const BtnGhost = ({ children, onClick, disabled, tone = 'neon' }) => (
+  <button onClick={onClick} disabled={disabled}
+    className={'px-2.5 py-1 rounded-md text-[11px] border disabled:opacity-40 transition-colors ' +
+      (tone === 'danger'
+        ? 'text-rose-300 border-rose-400/40 hover:bg-rose-400/10'
+        : tone === 'gold'
+          ? 'text-gold-300 border-gold-500/40 hover:bg-gold-500/10'
+          : 'text-slate-300 border-line hover:text-neon hover:border-neon/40 hover:bg-neon/5')}>
+    {children}
+  </button>
+);
+const Badge = ({ tone = 'gold', children }) => (
+  <span className={'inline-flex items-center px-1.5 py-0.5 rounded text-[10px] border ' +
+    (tone === 'danger' ? 'text-rose-300 bg-rose-400/10 border-rose-400/40'
+      : tone === 'ok' ? 'text-emerald-300 bg-emerald-400/10 border-emerald-400/30'
+      : 'text-gold-300 bg-gold-500/10 border-gold-500/40')}>{children}</span>
+);
+
+/* 二次确认弹层（所有写操作强制走这里） */
+function ConfirmModal({ modal, onClose }) {
+  if (!modal) return null;
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center px-4"
+         style={{ background: 'rgba(4,7,12,0.66)' }} onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-ink-850 border border-gold-500/35 p-6 slide-up"
+           style={{ boxShadow: '0 24px 70px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.05)' }}
+           onClick={e => e.stopPropagation()}>
+        <div className="text-[15px] font-semibold text-[#F0D590]">{modal.title}</div>
+        {modal.body && <div className="mt-2.5 text-[12.5px] text-slate-300 leading-relaxed">{modal.body}</div>}
+        {modal.red && (
+          <div className="mt-3 rounded-lg px-3 py-2 text-[12px] leading-relaxed"
+               style={{ background: 'rgba(229,72,77,0.10)', border: '1px solid rgba(229,72,77,0.35)', color: '#F0A8AB' }}>
+            {modal.red}
+          </div>
+        )}
+        <div className="mt-5 flex justify-end gap-2.5">
+          <button onClick={onClose}
+                  className="px-4 py-2 rounded-lg text-[12px] text-slate-400 border border-line hover:text-slate-200 transition-colors">取消</button>
+          <button onClick={() => { const fn = modal.onConfirm; onClose(); fn && fn(); }}
+                  className="px-4 py-2 rounded-lg text-[12px] font-semibold text-[#1A1408] hover:brightness-110 transition"
+                  style={{ backgroundImage: 'linear-gradient(135deg,#E8C460,#D4A017)',
+                           boxShadow: '0 4px 14px rgba(212,160,23,0.30)' }}>
+            {modal.confirmText || '确认执行'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 轻量 Toast */
+function Toast({ toast }) {
+  if (!toast) return null;
+  return (
+    <div className={'fixed left-1/2 bottom-8 -translate-x-1/2 z-[90] px-4 py-2.5 rounded-xl text-[13px] font-medium slide-up '
+      + (toast.type === 'ok' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white')}
+      style={{ boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}>
+      {toast.text}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：数据看板 */
+function DashboardPage({ go }) {
+  const ov = useApi('/api/admin/overview');
+  const audit = useApi('/api/admin/admin-logs?limit=200');
+  const pending = (audit.data && audit.data.pending) || [];
+  const cards = [
+    { label: '用户数',        value: ov.data ? String(ov.data.users_total) : '—', sub: '全部注册用户', to: 'users' },
+    { label: '今日消息数',    value: ov.data ? String(ov.data.today_messages) : '—', sub: 'chat_messages 当日新增', to: 'audit' },
+    { label: '累计转账笔数',  value: ov.data ? String(ov.data.transfer_count) : '—',
+      sub: ov.data ? '总金额 ' + fmtMoney(ov.data.transfer_amount) + ' 元' : '', to: 'audit' },
+    { label: '验证码发送数',  value: ov.data ? String(ov.data.codes_sent) : '—',
+      sub: ov.data ? '其中 ' + ov.data.inbox_codes + ' 条送达收件箱' : '', to: 'audit' },
+    { label: '知识待同步',    value: String(pending.length), sub: '风控参数改动待人工更新知识文档', to: 'knowledge' },
+    { label: '管理操作数',    value: audit.data ? String((audit.data.logs || []).length) : '—', sub: 'admin_logs 留痕（最近 200 条）', to: 'audit' },
+  ];
+  return (
+    <div>
+      <PageTitle title="数据看板" sub="全部真实聚合（来自业务库逐表统计），无任何演示假数据"
+                 right={<span className="text-[11px] text-gold-300/90 border border-gold-500/30 bg-gold-500/10 px-2.5 py-1 rounded-md">
+                   管理员视图：含敏感数据
+                 </span>} />
+      <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+        {cards.map(c => (
+          <Card key={c.label} className="p-4">
+            <div className="text-[11px] text-slate-500">{c.label}</div>
+            <div className="mt-2 text-[26px] leading-none font-semibold font-mono text-gold-300">{c.value}</div>
+            <div className="mt-2 text-[11px] text-slate-500 min-h-[16px]">{c.sub}</div>
+            <button onClick={() => go(c.to)}
+                    className="mt-2 text-[11px] text-neon hover:text-cyan-200 transition-colors">前往处理</button>
+          </Card>
+        ))}
+      </div>
+      {ov.error && <Card className="mt-4 p-4 text-[12px] text-rose-300">统计读取失败：{ov.error}</Card>}
+      <Card className="mt-4 p-4 text-[12px] text-slate-400 leading-relaxed">
+        可运营范围：风控参数 / 用户登录与角色 / 产品目录 / 知识库同步 / 系统公告；
+        <span className="text-gold-300">用户资产数据（余额 / 流水 / 持仓 / 订阅）在本后台不可修改</span> ——
+        每一次写操作都记录 admin_logs 审计留痕。
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：用户管理 */
+function UsersPage({ toast }) {
+  const [expand, setExpand] = useState(null);
+  const [modal, setModal] = useState(null);
+  const res = useApi('/api/admin/users');
+  const detail = useApi(expand ? '/api/admin/users/' + expand : '/api/admin/users/0', [expand]);
+  const users = (res.data && res.data.users) || [];
+
+  const callAction = async (url, body) => {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+                                   body: body ? JSON.stringify(body) : undefined });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) { toast('err', d.detail || '操作失败'); return; }
+      toast('ok', d.message || '操作成功');
+      window.dispatchEvent(new CustomEvent('admin:reload'));
+    } catch (e) { toast('err', '网络错误'); }
+  };
+  /* ★ 删除用户：DELETE 方法 + confirm_username 二次校验（后端还会拒删自己 / 最后一个管理员）。
+     这里刻意不复用 callAction —— 它写死 POST，只会被后端拒掉。 */
+  const deleteUser = async (u, allowAdmin) => {
+    try {
+      const qs = '?confirm_username=' + encodeURIComponent(u.username)
+               + (allowAdmin ? '&allow_admin=true' : '');
+      const r = await fetch(`/api/admin/users/${u.user_id}${qs}`,
+                            { method: 'DELETE', headers: authHeaders() });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) { toast('err', d.detail || '删除失败'); return; }
+      toast('ok', d.message || '已删除');
+      setExpand(null);
+      window.dispatchEvent(new CustomEvent('admin:reload'));
+    } catch (e) { toast('err', '网络错误'); }
+  };
+  const confirmDelete = (u) => {
+    setModal({
+      title: '删除用户（不可撤销）',
+      body: `将永久删除 ${u.username}（#${u.user_id}）及其名下全部业务数据：账户、银行卡、`
+          + '收款人、理财持仓、订阅、通知、操作日志、验证码、会话与聊天记录。'
+          + '该账号无法恢复；其 user_id 会被回收，之后注册的新用户可能复用这个号。'
+          + '审计日志（admin_logs）不受影响，本次删除动作本身也会写入审计。',
+      red: u.assets > 0
+        ? `该账号名下还有 ¥${fmtMoney(u.assets)} 资产，删除后一并消失。正式环境应改为软删（保留流水痕迹）。`
+        : '正式环境应改为软删（users.deleted_at），物理删除只用于演示 / 测试库。',
+      confirmText: '确认删除该账号',
+      onConfirm: () => deleteUser(u, u.role === 'admin'),
+    });
+  };
+  const confirmLock = (u, locked) => setModal({
+    title: locked ? '锁定用户账号' : '解锁用户账号',
+    body: locked
+      ? `将锁定 ${u.username}（#${u.user_id}）：该用户将无法登录（已登录会话仍有效至过期）。`
+      : `将解锁 ${u.username}（#${u.user_id}）：该用户恢复登录能力。`,
+    danger: locked,
+    confirmText: locked ? '确认锁定' : '确认解锁',
+    onConfirm: () => callAction(`/api/admin/users/${u.user_id}/lock`, { locked }),
+  });
+  const confirmReset = (u) => setModal({
+    title: '重置支付密码',
+    body: `将为 ${u.username}（#${u.user_id}）生成随机 6 位新支付密码，并通过站内信通知本人。明文不在管理端显示、不落任何审计记录。`,
+    confirmText: '确认重置',
+    onConfirm: () => callAction(`/api/admin/users/${u.user_id}/reset-paypass`),
+  });
+  const confirmRole = (u, role) => setModal({
+    title: role === 'admin' ? '提升为管理员' : '降级为普通用户',
+    body: `将把 ${u.username}（#${u.user_id}）的角色调整为 ${role}。${role === 'admin' ? '调整后该账号可登录运营后台。' : ''}`,
+    confirmText: '确认调整',
+    onConfirm: () => callAction(`/api/admin/users/${u.user_id}/role`, { role }),
+  });
+
+  return (
+    <div>
+      <PageTitle title="用户管理"
+        sub="账号 / 角色 / 实名 / 锁定状态 / 资产概览 · 点击行展开详情与白名单操作"
+        right={<span className="text-[11px] text-rose-300/90 border border-rose-400/30 bg-rose-400/10 px-2.5 py-1 rounded-md">
+          红线：余额 / 流水 / 持仓 / 订阅 仅可查看，不可修改
+        </span>} />
+      <Card>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse min-w-[860px]">
+            <thead><tr className="border-b border-line">
+              <Th>账号</Th><Th>角色</Th><Th>锁定</Th><Th>实名状态</Th><Th>注册时间</Th><Th>资产概览</Th>
+            </tr></thead>
+            <tbody className="divide-y divide-line-soft">
+              {res.loading && <tr><Td className="text-slate-500">读取中…</Td></tr>}
+              {res.error && <tr><Td className="text-rose-300">读取失败：{res.error}</Td></tr>}
+              {!res.loading && !res.error && users.map(u => (
+                <tr key={u.user_id} onClick={() => setExpand(expand === u.user_id ? null : u.user_id)}
+                    className="hover:bg-ink-800/60 cursor-pointer transition-colors">
+                  <td className="px-3.5 py-2 text-[12px] text-slate-200 font-medium">{u.username}</td>
+                  <Td>
+                    <span className={'px-1.5 py-0.5 rounded text-[10px] border ' +
+                      (u.role === 'admin' ? 'text-neon border-neon/40 bg-neon/10' : 'text-slate-400 border-line')}>
+                      {u.role}
+                    </span>
+                  </Td>
+                  <Td>{u.locked ? <Badge tone="danger">已锁定</Badge> : <span className="text-slate-600">—</span>}</Td>
+                  <Td>{u.realnamed ? u.real_name : <span className="text-slate-500">未实名</span>}</Td>
+                  <td className="px-3.5 py-2 text-[12px] text-slate-400 font-mono">{String(u.created_at || '').slice(0, 16)}</td>
+                  <td className="px-3.5 py-2 text-[12px]"><GoldNum value={u.assets} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {expand && (
+        <Card className="mt-3 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[13px] font-semibold text-slate-200">
+              用户详情 · {(detail.data && detail.data.user ? detail.data.user.username : ('#' + expand))}
+            </span>
+            <BtnGhost onClick={() => setExpand(null)}>收起</BtnGhost>
+          </div>
+          {detail.loading && <div className="text-[12px] text-slate-500">读取中…</div>}
+          {detail.error && <div className="text-[12px] text-rose-300">读取失败：{detail.error}</div>}
+          {detail.data && (
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 text-[12px]">
+              <div>
+                <div className="text-slate-500 mb-1.5">账户（只读）</div>
+                {(detail.data.accounts || []).map(a => (
+                  <div key={a.id} className="flex justify-between gap-3 py-1 text-slate-300">
+                    <span className="truncate">{a.name}</span>
+                    <GoldNum value={a.balance} className="shrink-0" />
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div className="text-slate-500 mb-1.5">银行卡（只读）</div>
+                {(detail.data.cards || []).map(c => (
+                  <div key={c.id} className="py-1 text-slate-300">{c.bank} {c.card_name}（{c.status}）</div>
+                ))}
+              </div>
+              <div>
+                <div className="text-slate-500 mb-1.5">订阅（只读）</div>
+                {(detail.data.subscriptions || []).map(x => (
+                  <div key={x.id} className="flex justify-between gap-3 py-1 text-slate-300">
+                    <span className="truncate">{x.service_name}</span>
+                    <span className="font-mono text-slate-400 shrink-0">¥{fmtMoney(x.fee)}/{x.cycle}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div className="text-slate-500 mb-1.5">理财持仓（只读）</div>
+                {(detail.data.holdings || []).map(h => (
+                  <div key={h.id} className="flex justify-between gap-3 py-1 text-slate-300">
+                    <span className="truncate">{(h.name || ('产品#' + h.id))}</span>
+                    <GoldNum value={h.amount} className="shrink-0" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* 操作区（白名单，全部二次确认 + 留痕） */}
+          {detail.data && detail.data.user && (
+            <div className="mt-4 pt-3 border-t border-line flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] text-slate-500 mr-1">可执行操作（二次确认 + admin_logs 留痕）：</span>
+              {(detail.data.user.locked
+                ? <BtnGhost tone="gold" onClick={() => confirmLock(detail.data.user, false)}>解锁登录</BtnGhost>
+                : <BtnGhost tone="danger" onClick={() => confirmLock(detail.data.user, true)}>锁定登录</BtnGhost>)}
+              <BtnGhost tone="gold" onClick={() => confirmReset(detail.data.user)}>重置支付密码</BtnGhost>
+              {detail.data.user.role === 'admin'
+                ? <BtnGhost onClick={() => confirmRole(detail.data.user, 'user')}>降级为普通用户</BtnGhost>
+                : <BtnGhost onClick={() => confirmRole(detail.data.user, 'admin')}>提升为管理员</BtnGhost>}
+              <span className="text-[11px] text-rose-400/70 ml-auto">资产数据无任何修改入口</span>
+              <span className="text-slate-700">|</span>
+              {/* ★ 传列表行而不是详情里的 user —— 详情接口的 user 没有 assets 字段，
+                  拿它判断"名下还有多少钱"永远是 falsy，弹窗会漏掉资产提醒 */}
+              <BtnGhost tone="danger" onClick={() => confirmDelete(
+                users.find(x => x.user_id === detail.data.user.user_id) || detail.data.user
+              )}>删除账号</BtnGhost>
+            </div>
+          )}
+        </Card>
+      )}
+      <ConfirmModal modal={modal} onClose={() => setModal(null)} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：风控参数 */
+function ConfigPage({ toast }) {
+  const api = useApi('/api/admin/config', []);
+  const [edit, setEdit] = useState(null);        // {key,label,value,unit,min,max,affects_knowledge,docs_ref}
+  const [newValue, setNewValue] = useState('');
+  const [err, setErr] = useState('');
+  const [confirm, setConfirm] = useState(null);  // 二次确认
+  const [historyKey, setHistoryKey] = useState(null);
+  const items = (api.data && api.data.config) || [];
+  const pendingAll = (api.data && api.data.pending) || [];
+
+  const openEdit = (it) => { setEdit(it); setNewValue(String(it.value)); setErr(''); };
+  const submit = () => {
+    if (!edit) return;
+    const n = Number(newValue);
+    if (newValue === '' || isNaN(n)) { setErr('请输入合法数值'); return; }
+    setConfirm({
+      title: '确认修改风控参数',
+      body: `${edit.label}：${edit.value} → ${newValue} ${edit.unit}`,
+      red: edit.affects_knowledge
+        ? `★ 该参数涉及 RAG 知识文档（${edit.docs_ref || '知识文档'}）中的数字规则，保存后文档需人工同步更新，知识库将出现"待同步"徽标。`
+        : '',
+      confirmText: '确认保存',
+      onConfirm: async () => {
+        try {
+          const r = await fetch('/api/admin/config/' + edit.key, {
+            method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ value: newValue }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.ok) { toast('err', d.detail || '保存失败'); return; }
+          toast(d.affects_knowledge ? 'err' : 'ok',
+                d.affects_knowledge ? ('已生效，但 ' + d.docs_ref + ' 需同步更新（已标记待同步）') : d.message);
+          setEdit(null);
+          window.dispatchEvent(new CustomEvent('admin:reload'));
+        } catch (e) { toast('err', '网络错误'); }
+      },
+    });
+  };
+
+  return (
+    <div>
+      <PageTitle title="风控参数"
+        sub="单源：system_config 表（rules.get_rule 运行时读取）· 修改即时生效 · 每次修改留痕 admin_logs"
+        right={pendingAll.length ? <Badge tone="danger">{pendingAll.length} 项知识文档待同步</Badge> : null} />
+      <Card>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse min-w-[900px]">
+            <thead><tr className="border-b border-line">
+              <Th>参数</Th><Th>当前值</Th><Th>允许范围</Th><Th>知识同步</Th><Th>最后修改</Th><Th>操作</Th>
+            </tr></thead>
+            <tbody className="divide-y divide-line-soft">
+              {api.loading && <tr><Td className="text-slate-500">读取中…</Td></tr>}
+              {api.error && <tr><Td className="text-rose-300">读取失败：{api.error}</Td></tr>}
+              {!api.loading && !api.error && items.map(it => (
+                <tr key={it.key} className="hover:bg-ink-800/60">
+                  <td className="px-3.5 py-2">
+                    <div className="text-[12px] text-slate-200 font-medium">{it.label}</div>
+                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{it.key}</div>
+                  </td>
+                  <td className="px-3.5 py-2">
+                    <span className="font-mono text-[15px] font-semibold text-gold-300">{it.value}</span>
+                    <span className="text-[11px] text-slate-500 ml-1">{it.unit}</span>
+                    {it.pending_sync && <span className="ml-2"><Badge tone="danger">待同步</Badge></span>}
+                    {it.enabled === false && <span className="ml-2"><Badge tone="danger">预留·未生效</Badge></span>}
+                  </td>
+                  <td className="px-3.5 py-2 text-[11px] text-slate-400 font-mono">{it.min} ~ {it.max} {it.unit}</td>
+                  <td className="px-3.5 py-2">
+                    {it.affects_knowledge
+                      ? <span className="text-[11px] text-amber-300">{it.docs_ref || '涉及知识文档'}</span>
+                      : <span className="text-[11px] text-slate-600">—</span>}
+                  </td>
+                  <td className="px-3.5 py-2 text-[11px] text-slate-500 font-mono">
+                    {it.updated_by ? (it.updated_by + ' · ' + String(it.updated_at || '').slice(5, 16)) : '从未修改'}
+                  </td>
+                  <td className="px-3.5 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <BtnGhost tone="gold" onClick={() => openEdit(it)}>修改</BtnGhost>
+                      <BtnGhost onClick={() => setHistoryKey(historyKey === it.key ? null : it.key)}>历史</BtnGhost>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {historyKey && <ConfigHistory apiKey={historyKey} />}
+
+      {pendingAll.length > 0 && (
+        <Card className="mt-4 p-4">
+          <div className="text-[13px] font-semibold text-rose-300 mb-2">待同步的知识文档（修改涉及 RAG 数字规则）</div>
+          <div className="space-y-1.5">
+            {pendingAll.map(r => {
+              let d = {};
+              try { d = JSON.parse(r.detail || '{}'); } catch (e) {}
+              return (
+                <div key={r.id} className="flex items-center gap-3 text-[12px] text-slate-300 flex-wrap">
+                  <span className="font-mono text-[11px] text-slate-500">{String(r.created_at || '').slice(0, 16)}</span>
+                  <span className="font-medium text-slate-200">{d.label || r.target_id}</span>
+                  <span className="font-mono">{d.old} → <span className="text-gold-300">{d.new}</span></span>
+                  <span className="text-amber-300">{d.docs}</span>
+                  <span className="text-slate-500">需人工更新后到「知识库」确认</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* 修改弹层（新值 + 二次确认） */}
+      {edit && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center px-4"
+             style={{ background: 'rgba(4,7,12,0.66)' }} onClick={() => setEdit(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-ink-850 border border-gold-500/35 p-6 slide-up"
+               style={{ boxShadow: '0 24px 70px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
+            <div className="text-[15px] font-semibold text-[#F0D590]">修改参数</div>
+            <div className="mt-1 text-[12px] text-slate-400">{edit.label}
+              <span className="font-mono text-slate-500 ml-2">{edit.key}</span>
+            </div>
+            <div className="mt-4 flex items-center gap-3">
+              <span className="font-mono text-[14px] text-slate-500">{edit.value} {edit.unit}</span>
+              <span className="text-slate-500">→</span>
+              <input value={newValue} onChange={e => { setNewValue(e.target.value); setErr(''); }} autoFocus
+                     className="input-gold w-36 h-10 rounded-lg px-3 text-[15px] font-mono font-semibold text-gold-300 bg-white/5 border border-white/10" />
+              <span className="text-[11px] text-slate-500">{edit.unit}</span>
+            </div>
+            <div className="mt-2 text-[11px] text-slate-500">
+              允许范围：{edit.min} ~ {edit.max} {edit.unit} · 越界值将被拒绝
+              {edit.affects_knowledge && <span className="text-amber-300"> · 涉及知识文档 {edit.docs_ref}</span>}
+              {edit.enabled === false && (
+                <div className="mt-2 rounded-lg px-3 py-2 text-[12px] leading-relaxed"
+                     style={{ background: 'rgba(229,72,77,0.10)', border: '1px solid rgba(229,72,77,0.35)', color: '#F0A8AB' }}>
+                  ★ 该参数为预留项：转账提交处尚未启用限额校验，修改后不会拦截交易（待代码启用后另行通知）。
+                </div>
+              )}
+            </div>
+            {err && <div className="mt-2 text-[12px] text-rose-300">{err}</div>}
+            {edit.affects_knowledge && (
+              <div className="mt-3 rounded-lg px-3 py-2 text-[12px] leading-relaxed"
+                   style={{ background: 'rgba(229,72,77,0.10)', border: '1px solid rgba(229,72,77,0.35)', color: '#F0A8AB' }}>
+                docs/knowledge/{edit.docs_ref} 对应文档需同步更新 —— 保存后将自动记录"待同步"标记，
+                直到知识库页确认更新。
+              </div>
+            )}
+            <div className="mt-5 flex justify-end gap-2.5">
+              <button onClick={() => setEdit(null)}
+                      className="px-4 py-2 rounded-lg text-[12px] text-slate-400 border border-line hover:text-slate-200">取消</button>
+              <button onClick={submit}
+                      className="px-4 py-2 rounded-lg text-[12px] font-semibold text-[#1A1408] hover:brightness-110"
+                      style={{ backgroundImage: 'linear-gradient(135deg,#E8C460,#D4A017)' }}>下一步</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <ConfirmModal modal={confirm} onClose={() => setConfirm(null)} />
+    </div>
+  );
+}
+
+function ConfigHistory({ apiKey }) {
+  const h = useApi('/api/admin/config/' + apiKey + '/history', [apiKey]);
+  return (
+    <Card className="mt-3 p-4">
+      <div className="text-[13px] font-semibold text-slate-200 mb-2 font-mono">{apiKey} · 修改历史</div>
+      {h.loading && <div className="text-[12px] text-slate-500">读取中…</div>}
+      {(!h.loading && (!h.data || (h.data.history || []).length === 0)) &&
+        <div className="text-[12px] text-slate-500">暂无修改记录</div>}
+      <div className="space-y-1.5">
+        {((h.data && h.data.history) || []).map(r => {
+          let d = {};
+          try { d = JSON.parse(r.detail || '{}'); } catch (e) {}
+          return (
+            <div key={r.id} className="flex items-center gap-3 text-[12px]">
+              <span className="font-mono text-[11px] text-slate-500">{String(r.created_at || '').slice(0, 16)}</span>
+              <span className="text-slate-300">{r.admin_name || ('#' + (r.admin_id || '?'))}</span>
+              <span className="font-mono text-slate-400">{d.old} → <span className="text-gold-300 font-semibold">{d.new}</span></span>
+              {r.pending_sync === 1 && !r.sync_done_at && <Badge tone="danger">文档待同步</Badge>}
+              {r.sync_done_at && <Badge tone="ok">已同步</Badge>}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：理财产品 */
+function ProductsPage({ toast }) {
+  const api = useApi('/api/admin/products', []);
+  const [edit, setEdit] = useState(null);
+  const [form, setForm] = useState({});
+  const [confirm, setConfirm] = useState(null);
+  const products = (api.data && api.data.products) || [];
+
+  const putProduct = async (id, changes) => {
+    try {
+      const r = await fetch('/api/admin/products/' + id, {
+        method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(changes),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { toast('err', d.detail || '保存失败'); return; }
+      toast('ok', d.message || '已更新');
+      window.dispatchEvent(new CustomEvent('admin:reload'));
+    } catch (e) { toast('err', '网络错误'); }
+  };
+
+  const toggleStatus = (p) => {
+    const off = (p.status || 'on') === 'on';
+    setConfirm({
+      title: off ? '下架产品' : '上架产品',
+      body: off
+        ? `下架「${p.name}」：用户端理财页与对话推荐立即不可见、不可再购买；既有持仓（${p.holders} 位持有人）不受影响，可正常展示与赎回。`
+        : `上架「${p.name}」：恢复用户端可见、可购买。`,
+      confirmText: off ? '确认下架' : '确认上架',
+      onConfirm: () => putProduct(p.id, { status: off ? 'off' : 'on' }),
+    });
+  };
+
+  const openEdit = (p) => { setEdit(p); setForm({
+    name: p.name, term: p.term, risk_level: String(p.risk_level),
+    annual_rate: String(p.annual_rate), min_amount: String(p.min_amount),
+  }); };
+  const saveEdit = () => {
+    const changes = {};
+    if (form.name && form.name !== edit.name) changes.name = form.name;
+    if (form.term && form.term !== edit.term) changes.term = form.term;
+    if (Number(form.risk_level) !== Number(edit.risk_level)) changes.risk_level = Number(form.risk_level);
+    if (Number(form.annual_rate) !== Number(edit.annual_rate)) changes.annual_rate = Number(form.annual_rate);
+    if (Number(form.min_amount) !== Number(edit.min_amount)) changes.min_amount = Number(form.min_amount);
+    if (Object.keys(changes).length === 0) { toast('ok', '没有修改'); setEdit(null); return; }
+    const body = Object.entries(changes).map(([k, v]) => k + ' → ' + v).join('；');
+    const pid = edit.id; setEdit(null);
+    setConfirm({ title: '确认更新产品', body, confirmText: '确认保存',
+                 onConfirm: () => putProduct(pid, changes) });
+  };
+
+  return (
+    <div>
+      <PageTitle title="理财产品"
+        sub="上架 / 下架 / 编辑（名称、利率、期限、起购、风险等级）· 下架即用户端不可见不可买，既有持仓不受影响" />
+      <Card>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse min-w-[860px]">
+            <thead><tr className="border-b border-line">
+              <Th>产品</Th><Th>期限</Th><Th>风险</Th><Th>年化</Th><Th>起购</Th><Th>持有人</Th><Th>状态</Th><Th>操作</Th>
+            </tr></thead>
+            <tbody className="divide-y divide-line-soft">
+              {api.loading && <tr><Td className="text-slate-500">读取中…</Td></tr>}
+              {api.error && <tr><Td className="text-rose-300">读取失败：{api.error}</Td></tr>}
+              {!api.loading && !api.error && products.map(p => (
+                <tr key={p.id} className="hover:bg-ink-800/60">
+                  <td className="px-3.5 py-2 text-[12px] text-slate-200 font-medium">{p.name}</td>
+                  <Td>{p.term}</Td>
+                  <Td><span className="font-mono">R{p.risk_level}</span></Td>
+                  <td className="px-3.5 py-2 font-mono text-[13px] text-gold-300 font-semibold">{Number(p.annual_rate).toFixed(2)}%</td>
+                  <td className="px-3.5 py-2"><GoldNum value={p.min_amount} /></td>
+                  <td className="px-3.5 py-2 font-mono text-slate-400">{p.holders}</td>
+                  <Td>{(p.status || 'on') === 'off'
+                    ? <Badge tone="danger">已下架</Badge>
+                    : <Badge tone="ok">在售</Badge>}</Td>
+                  <td className="px-3.5 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <BtnGhost tone="gold" onClick={() => openEdit(p)}>编辑</BtnGhost>
+                      {(p.status || 'on') === 'off'
+                        ? <BtnGhost onClick={() => toggleStatus(p)}>上架</BtnGhost>
+                        : <BtnGhost tone="danger" onClick={() => toggleStatus(p)}>下架</BtnGhost>}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {edit && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center px-4"
+             style={{ background: 'rgba(4,7,12,0.66)' }} onClick={() => setEdit(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-ink-850 border border-gold-500/35 p-6 slide-up"
+               onClick={e => e.stopPropagation()}>
+            <div className="text-[15px] font-semibold text-[#F0D590] mb-4">编辑产品 · {edit.name}</div>
+            {[['名称', 'name', 'text'], ['期限', 'term', 'text'],
+              ['风险等级 (1/2/3)', 'risk_level', 'number'], ['年化收益率 (%)', 'annual_rate', 'number'],
+              ['起购金额 (元)', 'min_amount', 'number']].map(([label, key, type]) => (
+              <div key={key} className="mb-3">
+                <label className="block text-[11px] text-slate-500 mb-1">{label}</label>
+                <input type={type} value={form[key]} step="0.01"
+                       onChange={e => setForm({ ...form, [key]: e.target.value })}
+                       className="input-gold w-full h-10 rounded-lg px-3 text-[13px] text-slate-200 bg-white/5 border border-white/10" />
+              </div>
+            ))}
+            <div className="mt-4 flex justify-end gap-2.5">
+              <button onClick={() => setEdit(null)}
+                      className="px-4 py-2 rounded-lg text-[12px] text-slate-400 border border-line hover:text-slate-200">取消</button>
+              <button onClick={saveEdit}
+                      className="px-4 py-2 rounded-lg text-[12px] font-semibold text-[#1A1408] hover:brightness-110"
+                      style={{ backgroundImage: 'linear-gradient(135deg,#E8C460,#D4A017)' }}>下一步</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <ConfirmModal modal={confirm} onClose={() => setConfirm(null)} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：知识库 */
+function KnowledgePage({ toast }) {
+  const api = useApi('/api/admin/knowledge', []);
+  const [openDoc, setOpenDoc] = useState(null);
+  const [content, setContent] = useState('');
+  const [confirm, setConfirm] = useState(null);
+  const docs = (api.data && api.data.docs) || [];
+  const pending = (api.data && api.data.pending) || [];
+
+  const viewDoc = async (name) => {
+    if (openDoc === name) { setOpenDoc(null); return; }
+    setOpenDoc(name); setContent('读取中…');
+    try {
+      const r = await fetch('/api/admin/knowledge/' + name, { headers: authHeaders() });
+      const d = await r.json();
+      setContent(d.ok ? d.content : ('读取失败：' + (d.detail || '')));
+    } catch (e) { setContent('网络错误'); }
+  };
+  const confirmSync = (name) => setConfirm({
+    title: '确认文档已同步',
+    body: `确认已人工核对并更新 docs/knowledge/${name} 的数字规则与系统当前参数一致？确认后将清除指向该文档的"待同步"标记并写入审计。`,
+    confirmText: '确认已同步',
+    onConfirm: async () => {
+      try {
+        const r = await fetch('/api/admin/knowledge/' + name + '/sync-confirm',
+                              { method: 'POST', headers: authHeaders() });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) { toast('err', d.detail || '操作失败'); return; }
+        toast('ok', d.message);
+        window.dispatchEvent(new CustomEvent('admin:reload'));
+      } catch (e) { toast('err', '网络错误'); }
+    },
+  });
+  const confirmRebuild = () => setConfirm({
+    title: '重建知识索引',
+    body: '将重扫 docs/knowledge/*.md 并重建 README.md 索引表（文档标题 / 主题 / 关键数字摘要），供 Agent 检索引用。',
+    confirmText: '开始重建',
+    onConfirm: async () => {
+      try {
+        const r = await fetch('/api/admin/knowledge/rebuild', { method: 'POST', headers: authHeaders() });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) { toast('err', d.detail || '重建失败'); return; }
+        toast('ok', d.message);
+        window.dispatchEvent(new CustomEvent('admin:reload'));
+      } catch (e) { toast('err', '网络错误'); }
+    },
+  });
+
+  return (
+    <div>
+      <PageTitle title="知识库"
+        sub={'文档目录：' + ((api.data && api.data.dir) || 'docs/knowledge') + ' · 风控参数改动涉及知识文档时显示"待同步"徽标'}
+        right={<BtnGhost tone="gold" onClick={confirmRebuild}>重建索引</BtnGhost>} />
+      {pending.length > 0 && (
+        <Card className="mb-4 p-4">
+          <div className="text-[13px] font-semibold text-rose-300 mb-2">待同步（{pending.length}）— 修改参数后对应文档需人工更新</div>
+          <div className="space-y-1.5">
+            {pending.map(r => {
+              let d = {};
+              try { d = JSON.parse(r.detail || '{}'); } catch (e) {}
+              const doc = d.docs || r.target_id;
+              return (
+                <div key={r.id} className="flex items-center gap-3 text-[12px] text-slate-300 flex-wrap">
+                  <Badge tone="danger">待同步</Badge>
+                  <span className="font-mono text-slate-400">{doc}</span>
+                  <span>{d.label || ''}：{d.old} → <span className="text-gold-300">{d.new}</span></span>
+                  <span className="font-mono text-[11px] text-slate-500">{String(r.created_at || '').slice(0, 16)}</span>
+                  {doc && doc.endsWith('.md') && <BtnGhost tone="gold" onClick={() => confirmSync(doc)}>已同步</BtnGhost>}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+      <Card>
+        <table className="w-full border-collapse">
+          <thead><tr className="border-b border-line"><Th>文档</Th><Th>大小</Th><Th>更新时间</Th><Th>操作</Th></tr></thead>
+          <tbody className="divide-y divide-line-soft">
+            {api.loading && <tr><Td className="text-slate-500">读取中…</Td></tr>}
+            {api.error && <tr><Td className="text-rose-300">读取失败：{api.error}</Td></tr>}
+            {!api.loading && !api.error && docs.map(d => {
+              const needs = pending.some(r => {
+                let dd = {}; try { dd = JSON.parse(r.detail || '{}'); } catch (e) {}
+                return dd.docs === d.name || r.target_id === d.name;
+              });
+              return (
+                <tr key={d.name} className="hover:bg-ink-800/60">
+                  <td className="px-3.5 py-2 text-[12px] text-slate-200 font-medium font-mono">{d.name}</td>
+                  <td className="px-3.5 py-2 text-[11px] text-slate-500 font-mono">{d.size} B</td>
+                  <td className="px-3.5 py-2 text-[11px] text-slate-500 font-mono">{d.updated_at}</td>
+                  <td className="px-3.5 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <BtnGhost onClick={() => viewDoc(d.name)}>{openDoc === d.name ? '收起' : '查看'}</BtnGhost>
+                      {needs && <BtnGhost tone="gold" onClick={() => confirmSync(d.name)}>已同步</BtnGhost>}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {openDoc && (
+          <div className="border-t border-line px-5 py-4">
+            <div className="text-[12px] font-semibold text-slate-300 mb-2 font-mono">{openDoc}</div>
+            <pre className="text-[11.5px] leading-relaxed text-slate-400 whitespace-pre-wrap max-h-[420px] overflow-y-auto scroll-thin"
+                 style={{ fontFamily: 'inherit' }}>{content}</pre>
+          </div>
+        )}
+      </Card>
+      <ConfirmModal modal={confirm} onClose={() => setConfirm(null)} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：系统公告 */
+function NoticePage({ toast }) {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(null);
+
+  const send = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch('/api/admin/announcement', {
+        method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ title, content }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { toast('err', d.detail || '发送失败'); return; }
+      toast('ok', d.message);
+      setTitle(''); setContent('');
+      window.dispatchEvent(new CustomEvent('admin:reload'));
+    } catch (e) { toast('err', '网络错误'); }
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      <PageTitle title="系统公告"
+        sub="编辑公告 → 全员收件箱群发（复用通知体系 type=notice，用户在顶栏「收件箱」可见）" />
+      <Card className="p-5">
+        <label className="block text-[11px] text-slate-500 mb-1">公告标题</label>
+        <input value={title} onChange={e => setTitle(e.target.value)} maxLength={80}
+               placeholder="如：系统升级通知"
+               className="input-gold w-full h-11 rounded-lg px-4 text-[14px] text-slate-200 bg-white/5 border border-white/10" />
+        <label className="block text-[11px] text-slate-500 mb-1 mt-4">公告内容</label>
+        <textarea value={content} onChange={e => setContent(e.target.value)} rows={7} maxLength={1000}
+                  placeholder="公告正文（将原文送达每位用户的站内收件箱）"
+                  className="input-gold w-full rounded-lg px-4 py-3 text-[13px] leading-relaxed text-slate-200 bg-white/5 border border-white/10 resize-none" />
+        <div className="mt-3 text-[11px] text-slate-500">
+          发送后不可撤回；本次发送会写入 admin_logs（含标题与接收人数）。
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button disabled={busy || !title.trim() || !content.trim()}
+                  onClick={() => setConfirm({
+                    title: '确认发送系统公告',
+                    body: `标题「${title.trim()}」，将发送给全部注册用户（全员收件箱群发）。`,
+                    confirmText: '确认发送',
+                    onConfirm: send,
+                  })}
+                  className="px-5 py-2.5 rounded-lg text-[13px] font-semibold text-[#1A1408] hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ backgroundImage: 'linear-gradient(135deg,#E8C460,#D4A017)' }}>
+            {busy ? '发送中…' : '发送公告'}
+          </button>
+        </div>
+      </Card>
+      <ConfirmModal modal={confirm} onClose={() => setConfirm(null)} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 页面：操作审计 */
+function AuditPage() {
+  const [tab, setTab] = useState('ops');   // ops=全局业务日志 | admin=管理员操作
+  const [fUser, setFUser] = useState('');
+  const [fAction, setFAction] = useState('');
+  const [fResult, setFResult] = useState('');
+  const [fAdminAction, setFAdminAction] = useState('');
+
+  const qs = new URLSearchParams();
+  if (fUser.trim()) qs.set('user_id', fUser.trim());
+  if (fAction) qs.set('action', fAction);
+  if (fResult) qs.set('result', fResult);
+  qs.set('limit', '300');
+  const ops = useApi('/api/admin/logs?' + qs.toString(), [fUser, fAction, fResult, tab]);
+  const actions = Array.from(new Set(((ops.data && ops.data.logs) || []).map(l => l.action)));
+
+  const aqs = new URLSearchParams();
+  if (fAdminAction) aqs.set('action', fAdminAction);
+  aqs.set('limit', '300');
+  const adm = useApi('/api/admin/admin-logs?' + aqs.toString(), [fAdminAction, tab]);
+  const pending = (adm.data && adm.data.pending) || [];
+
+  return (
+    <div>
+      <PageTitle title="操作审计"
+        sub="全局业务日志（operation_logs）+ 管理员操作日志（admin_logs）—— 管理员自己也是审计对象"
+        right={
+          <div className="flex items-center gap-1 rounded-lg border border-line p-1">
+            {[['ops', '全局业务日志'], ['admin', '管理操作日志']].map(([k, label]) => (
+              <button key={k} onClick={() => setTab(k)}
+                className={'px-3 py-1.5 rounded-md text-[12px] transition-colors ' +
+                  (tab === k ? 'text-gold-300 bg-gold-500/10 border border-gold-500/40' : 'text-slate-400 hover:text-slate-200')}>
+                {label}
+              </button>
+            ))}
+          </div>
+        } />
+
+      {tab === 'ops' ? (
+        <Card className="p-4 mb-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <input value={fUser} onChange={e => setFUser(e.target.value)} placeholder="用户 ID"
+                   className="input-gold w-28 h-9 rounded-md bg-ink-800 border border-line px-3 text-[12px] text-slate-200 placeholder-slate-600" />
+            <select value={fAction} onChange={e => setFAction(e.target.value)}
+                    className="h-9 rounded-md bg-ink-800 border border-line px-2 text-[12px] text-slate-200">
+              <option value="">全部类型</option>
+              {actions.map(a => <option key={a} value={a}>{ACTION_CN[a] || a}</option>)}
+            </select>
+            <select value={fResult} onChange={e => setFResult(e.target.value)}
+                    className="h-9 rounded-md bg-ink-800 border border-line px-2 text-[12px] text-slate-200">
+              <option value="">全部结果</option>
+              <option value="success">成功</option>
+              <option value="failed">失败</option>
+            </select>
+            {(fUser || fAction || fResult) &&
+              <BtnGhost onClick={() => { setFUser(''); setFAction(''); setFResult(''); }}>清除筛选</BtnGhost>}
+            <span className="ml-auto text-[11px] text-slate-500">共 {((ops.data && ops.data.logs) || []).length} 条</span>
+          </div>
+        </Card>
+      ) : (
+        <Card className="p-4 mb-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <select value={fAdminAction} onChange={e => setFAdminAction(e.target.value)}
+                    className="h-9 rounded-md bg-ink-800 border border-line px-2 text-[12px] text-slate-200">
+              <option value="">全部管理动作</option>
+              {Object.keys(ADMIN_ACTION_TONE).map(a => <option key={a} value={a}>{ACTION_CN[a] || a}</option>)}
+            </select>
+            {pending.length > 0 && <Badge tone="danger">{pending.length} 项知识文档待同步</Badge>}
+            <span className="ml-auto text-[11px] text-slate-500">共 {((adm.data && adm.data.logs) || []).length} 条</span>
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        {tab === 'ops' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse min-w-[820px]">
+              <thead><tr className="border-b border-line">
+                <Th>时间</Th><Th>用户</Th><Th>类型</Th><Th>结果</Th><Th>明细</Th>
+              </tr></thead>
+              <tbody className="divide-y divide-line-soft">
+                {ops.loading && <tr><Td className="text-slate-500">读取中…</Td></tr>}
+                {ops.error && <tr><Td className="text-rose-300">读取失败：{ops.error}</Td></tr>}
+                {!ops.loading && !ops.error && (ops.data.logs || []).map(l => (
+                  <tr key={l.id} className="hover:bg-ink-800/60">
+                    <td className="px-3.5 py-2 text-[12px] text-slate-400 font-mono whitespace-nowrap">{String(l.created_at || '').slice(0, 19)}</td>
+                    <td className="px-3.5 py-2 text-[12px] text-slate-200">{l.username}</td>
+                    <Td>{ACTION_CN[l.action] || l.action}</Td>
+                    <Td>
+                      <span className={(l.result === 'success' ? 'text-emerald-300' : 'text-rose-300')}>
+                        {RESULT_CN[l.result] || l.result}
+                      </span>
+                    </Td>
+                    <td className="px-3.5 py-2 text-[11px] text-slate-500 font-mono max-w-[380px] truncate">{l.detail || ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse min-w-[900px]">
+              <thead><tr className="border-b border-line">
+                <Th>时间</Th><Th>管理员</Th><Th>动作</Th><Th>对象</Th><Th>old → new / 明细</Th><Th>同步状态</Th>
+              </tr></thead>
+              <tbody className="divide-y divide-line-soft">
+                {adm.loading && <tr><Td className="text-slate-500">读取中…</Td></tr>}
+                {adm.error && <tr><Td className="text-rose-300">读取失败：{adm.error}</Td></tr>}
+                {!adm.loading && !adm.error && (adm.data.logs || []).map(l => {
+                  let d = {};
+                  try { d = JSON.parse(l.detail || '{}'); } catch (e) {}
+                  const fmtV = v => v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+                  const oldNew = d.old != null ? (fmtV(d.old) + ' → ' + fmtV(d.new)) : '';
+                  return (
+                    <tr key={l.id} className="hover:bg-ink-800/60">
+                      <td className="px-3.5 py-2 text-[12px] text-slate-400 font-mono whitespace-nowrap">{String(l.created_at || '').slice(0, 19)}</td>
+                      <td className="px-3.5 py-2 text-[12px] text-slate-200">{l.admin_name || ('#' + l.admin_id)}</td>
+                      <td>
+                        <span className={'px-1.5 py-0.5 rounded text-[10px] border ' + (ADMIN_ACTION_TONE[l.action] || 'text-slate-400 border-line')}>
+                          {ACTION_CN[l.action] || l.action}
+                        </span>
+                      </td>
+                      <td className="px-3.5 py-2 text-[11px] text-slate-400 font-mono">{l.target_type}{l.target_id ? ('#' + l.target_id) : ''}</td>
+                      <td className="px-3.5 py-2 text-[11px] text-slate-400 font-mono max-w-[360px] truncate">
+                        {oldNew || l.detail || ''}
+                      </td>
+                      <Td>
+                        {l.pending_sync === 1 && !l.sync_done_at && <Badge tone="danger">待同步</Badge>}
+                        {l.sync_done_at && <Badge tone="ok">已同步</Badge>}
+                        {!l.pending_sync && !l.sync_done_at && <span className="text-slate-600">—</span>}
+                      </Td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   数字人形象（人物模型 + 背景）
+   —— 管理员选择 Live2D 数字柜员「小微」的人物与背景，保存后全局生效。
+      预览 iframe 直连 FAY_FRONTEND_URL 并拼 ?model=&bg=。
+   ============================================================ */
+function AppearanceAdminPage({ toast }) {
+  const api = useApi('/api/appearance', []);
+  const [selModel, setSelModel] = useState('');
+  const [selBg, setSelBg] = useState('');
+  // ★ 预览跟随下拉选择「即时」切换；reloadNonce 仅用于手动强制 iframe 重挂载
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const data = (api.data && api.data.ok) ? api.data : null;
+  const [bgList, setBgList] = useState(null);   // 上传成功后本地追加的背景列表（无需整页重载）
+  const [saved, setSaved] = useState(null);   // 已保存值（仅用于「未保存」提示）
+  // 数据到达后回填选中项（仅首次）
+  useEffect(() => {
+    if (data && !selModel) {
+      setSelModel(data.model); setSelBg(data.background);
+    }
+    if (data) setSaved({ model: data.model, background: data.background });
+  }, [data]); // eslint-disable-line
+
+  const frontendUrl = data ? data.frontend_url : '';
+  // ★ iframe 加 key（含 reloadNonce）→ 选中项变化时重挂载，保证 Live2D 端重新读取 location.search
+  const previewSrc = frontendUrl
+    ? frontendUrl + (frontendUrl.includes('?') ? '&' : '?') +
+      'model=' + encodeURIComponent(selModel || 'Haru') +
+      '&bg=' + encodeURIComponent(selBg || 'nokia_reception_desk.png')
+    : '';
+  const previewKey = previewSrc + '|' + reloadNonce;
+  const viewModel = selModel || 'Haru';
+  const viewBg = selBg || 'nokia_reception_desk.png';
+  const dirty = !!(saved && (selModel !== saved.model || selBg !== saved.background));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await fetch('/api/appearance', {
+        method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ model: selModel, background: selBg }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) toast('err', d.detail || d.message || '保存失败');
+      else {
+        toast('ok', d.message || '数字人形象已保存');
+        setSaved({ model: selModel, background: selBg });
+      }
+    } catch (e) { toast('err', '网络错误'); }
+    finally { setSaving(false); }
+  };
+
+  const onUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/appearance/background', { method: 'POST', headers: authHeaders(), body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) toast('err', d.detail || '上传失败');
+      else {
+        toast('ok', d.message || '背景已上传');
+        // 就地刷新背景下拉（含新图）并自动切到新图 → 预览立即显示；无需整页重载
+        if (d.backgrounds) setBgList(d.backgrounds);
+        if (d.filename) setSelBg(d.filename);
+      }
+    } catch (err) { toast('err', '网络错误'); }
+    finally { setUploading(false); e.target.value = ''; }
+  };
+
+  return (
+    <div>
+      <PageTitle title="数字人形象"
+        sub="全局配置 · 选择「小微」的人物模型与背景 · 保存即时生效 · 每次修改落 admin_logs"
+        right={<Badge tone="gold">全局生效</Badge>} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* 实时预览 */}
+        <Card className="overflow-hidden">
+          <div className="text-[12px] text-slate-400 mb-2 flex items-center gap-2">
+            <span className="shrink-0">实时预览</span>
+            <span className="shrink-0 px-1.5 py-0.5 rounded bg-white/10 font-mono text-[11px] text-slate-200">
+              {viewModel} · {viewBg}
+            </span>
+            {dirty && <span className="shrink-0 text-[11px] text-amber-400">未保存</span>}
+            <span className="ml-auto font-mono text-[11px] text-slate-500 truncate">{previewSrc || '前端未配置'}</span>
+          </div>
+          <div className="relative rounded-lg overflow-hidden border border-line" style={{ background: '#0A0F18', minHeight: 460 }}>
+            {previewSrc ? (
+              <iframe key={previewKey} src={previewSrc} title="数字人形象预览" className="w-full h-full border-0"
+                      allow="autoplay" style={{ background: '#0A0F18', minHeight: 460 }} />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-[13px] text-slate-500">
+                未配置前端地址（FAY_FRONTEND_URL）
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* 设置项 */}
+        <div className="space-y-4">
+          <Card className="p-4 space-y-4">
+            <div className="space-y-4">
+              <div>
+                <div className="text-[12px] text-slate-400 mb-1.5">人物模型</div>
+                <select className="input-gold w-full h-10 rounded-lg px-3 text-[13px] bg-white/5 border border-white/10 text-slate-100"
+                        value={selModel} disabled={!data}
+                        onChange={e => setSelModel(e.target.value)}>
+                  {(data ? data.models : []).map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="text-[12px] text-slate-400 mb-1.5">背景</div>
+                <select className="input-gold w-full h-10 rounded-lg px-3 text-[13px] bg-white/5 border border-white/10 text-slate-100"
+                        value={selBg} disabled={!data}
+                        onChange={e => setSelBg(e.target.value)}>
+                  {(bgList || (data ? data.backgrounds : [])).map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+                <p className="mt-1.5 text-[11px] text-slate-500">选择后左侧预览立即切换（无需点按钮）</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-[13px] border border-gold-500/35 cursor-pointer hover:bg-white/5 text-slate-200">
+                <input type="file" accept="image/png" className="hidden" disabled={uploading} onChange={onUpload} />
+                {uploading ? '上传中…' : '上传新背景图'}
+              </label>
+              <span className="text-[11px] text-slate-500">仅 PNG · ≤8MB</span>
+            </div>
+          </Card>
+
+          <Card className="p-4 flex items-center gap-3">
+            <BtnGhost onClick={() => setReloadNonce(n => n + 1)} disabled={!data}>重新加载预览</BtnGhost>
+            <button onClick={save} disabled={!data || saving}
+                    className="px-4 py-2.5 rounded-lg text-[13px] font-semibold text-[#1A1408] transition hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundImage: 'linear-gradient(135deg,#E8C460,#D4A017)' }}>
+              {saving ? '保存中…' : '保存形象'}
+            </button>
+          </Card>
+
+          <div className="text-[11px] leading-relaxed text-slate-500 px-1">
+            形象为全局配置，保存后用户端对话页右侧「数字柜员 · 小微」面板与管理后台将同步显示所选人物 / 背景。
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ 外壳 */
+const NAV = [
+  { key: 'dashboard', label: '数据看板' },
+  { key: 'users',     label: '用户管理' },
+  { key: 'config',    label: '风控参数' },
+  { key: 'products',  label: '理财产品' },
+  { key: 'knowledge', label: '知识库' },
+  { key: 'notice',    label: '系统公告' },
+  { key: 'audit',     label: '操作审计' },
+  { key: 'appearance', label: '数字人形象' },
+];
+
+function App() {
+  const [page, setPage] = useState('dashboard');
+  const [me, setMe] = useState(null);
+  const [denied, setDenied] = useState(false);
+  const [toastState, setToastState] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const toast = (type, text) => {
+    setToastState({ type, text });
+    setTimeout(() => setToastState(null), 3200);
+  };
+
+  useEffect(() => {
+    const onReload = () => setReloadKey(k => k + 1);
+    window.addEventListener('admin:reload', onReload);
+    return () => window.removeEventListener('admin:reload', onReload);
+  }, []);
+
+  useEffect(() => {
+    if (!localStorage.getItem('xb_token')) { window.location.href = '/admin/login'; return; }
+    fetch('/api/admin/overview', { headers: authHeaders() })
+      .then(r => r.json().then(d => ({ ok: r.ok, status: r.status, d })))
+      .then(({ ok, status }) => {
+        if (status === 401) { window.location.href = '/admin/login'; return; }
+        if (status === 403) { setDenied(true); return; }
+        if (ok) setMe({ username: localStorage.getItem('xb_user') || 'admin', role: 'admin' });
+      })
+      .catch(() => setDenied(true));
+  }, []);
+
+  const logout = () => {
+    localStorage.removeItem('xb_token');
+    localStorage.removeItem('xb_user');
+    localStorage.removeItem('xb_role');
+    window.location.href = '/admin/login';
+  };
+
+  if (denied) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <Card className="p-8 max-w-md text-center">
+          <div className="text-[15px] font-semibold text-slate-100">无管理员权限（403）</div>
+          <div className="mt-2 text-[12px] text-slate-500 leading-relaxed">
+            当前账号不是管理员角色。管理员账号见 README（种子：admin / admin123）。
+          </div>
+          <button onClick={() => { window.location.href = '/chat'; }}
+                  className="mt-5 px-4 py-2 rounded-lg text-[12px] text-neon border border-neon/40 hover:bg-neon/10 transition-colors">
+            返回用户端
+          </button>
+        </Card>
+      </div>
+    );
+  }
+
+  const subMap = {
+    dashboard: '数据看板 · 全部真实聚合',
+    users: '用户管理 · 白名单操作 · 资产只读',
+    config: '风控参数 · system_config 单源',
+    products: '理财产品 · 上架 / 下架 / 编辑',
+    knowledge: '知识库 · docs/knowledge',
+    notice: '系统公告 · 全员收件箱群发',
+    audit: '操作审计 · 全链路留痕',
+    appearance: '数字人形象 · 人物模型 / 背景',
+  };
+
+  return (
+    <div className="h-screen flex flex-col">
+      {/* 顶栏 */}
+      <header className="h-[60px] shrink-0 flex items-center justify-between px-6 border-b border-line"
+              style={{ background: 'rgba(10,15,24,0.85)' }}>
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl text-[15px] font-semibold"
+                style={{ color: '#1A1408', backgroundImage: 'linear-gradient(135deg,#E8C460,#D4A017)',
+                         boxShadow: '0 4px 12px rgba(212,160,23,0.3)' }}>运</span>
+          <span className="text-[15px] font-semibold text-[#F0D590] tracking-wide">运营管理后台</span>
+          <span className="text-[11px] text-slate-500 border border-line rounded px-2 py-0.5">{subMap[page]}</span>
+        </div>
+        <div className="flex items-center gap-4 text-[12px]">
+          <span className="text-slate-500">管理员：{me ? me.username : '—'}</span>
+          <button onClick={() => { window.location.href = '/chat'; }}
+                  className="text-slate-400 hover:text-neon transition-colors">返回用户端</button>
+          <button onClick={logout} className="text-slate-400 hover:text-rose-300 transition-colors">退出</button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex min-h-0">
+        {/* 左侧管理导航（与用户端完全隔离） */}
+        <nav className="w-[200px] shrink-0 border-r border-line flex flex-col"
+             style={{ background: 'rgba(10,15,24,0.55)' }}>
+          <div className="flex-1 py-4 px-3 space-y-1">
+            {NAV.map(n => (
+              <button key={n.key} onClick={() => setPage(n.key)}
+                className={'relative w-full text-left px-4 py-2.5 rounded-lg text-[13px] font-medium transition-colors ' +
+                  (page === n.key
+                    ? 'text-[#F0D590] bg-white/[0.05] border border-gold-500/35'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-ink-800/70 border border-transparent')}>
+                {page === n.key && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full bg-[#D4A017]" />}
+                {n.label}
+              </button>
+            ))}
+          </div>
+          <div className="px-5 py-4 border-t border-line text-[11px] text-slate-600 leading-relaxed">
+            数据来自业务库真实聚合<br />写操作全部落 admin_logs<br />
+            <span className="text-rose-400/70">用户资产禁止修改</span>
+          </div>
+        </nav>
+
+        {/* 主区 */}
+        <main className="flex-1 min-w-0 overflow-y-auto scroll-thin px-6 py-5">
+          {page === 'dashboard' && <DashboardPage go={setPage} />}
+          {page === 'users'     && <UsersPage key={'u' + reloadKey} toast={toast} />}
+          {page === 'config'    && <ConfigPage key={'c' + reloadKey} toast={toast} />}
+          {page === 'products'  && <ProductsPage key={'p' + reloadKey} toast={toast} />}
+          {page === 'knowledge' && <KnowledgePage key={'k' + reloadKey} toast={toast} />}
+          {page === 'notice'    && <NoticePage toast={toast} />}
+          {page === 'audit'     && <AuditPage key={'a' + reloadKey} />}
+          {page === 'appearance' && <AppearanceAdminPage key={'ap' + reloadKey} toast={toast} />}
+        </main>
+      </div>
+
+      <Toast toast={toastState} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

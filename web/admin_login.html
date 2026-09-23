@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小微银行 · 运营管理后台 · 登录</title>
+<!-- C6：运营管理后台独立登录入口（黑金体系 · 独立视觉变体） -->
+<script src="/vendor/tailwind.js"></script>
+<script src="/vendor/react.js"></script>
+<script src="/vendor/react-dom.js"></script>
+<script src="/vendor/babel.js"></script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    color: #E8E4D8; background-color:#06090F;
+    background-image:
+      radial-gradient(1px 1px at 22px 34px, rgba(255,255,255,0.5), transparent 55%),
+      radial-gradient(1px 1px at 187px 122px, rgba(255,255,255,0.32), transparent 55%),
+      radial-gradient(1.5px 1.5px at 310px 58px, rgba(240,213,144,0.35), transparent 55%),
+      radial-gradient(1px 1px at 96px 208px, rgba(255,255,255,0.28), transparent 55%),
+      linear-gradient(to right, rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 340px 280px, 340px 280px, 340px 280px, 340px 280px, 48px 48px, 48px 48px;
+  }
+  b, strong { font-weight: 600; }
+  input { font-variant-numeric: tabular-nums; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(6px);} to { opacity:1; transform:translateY(0);} }
+  .fade-in { animation: fadeIn .4s ease-out both; }
+  @keyframes shakeX { 0%,100%{transform:translateX(0);} 20%{transform:translateX(-7px);} 40%{transform:translateX(7px);} 60%{transform:translateX(-5px);} 80%{transform:translateX(5px);} }
+  .shake { animation: shakeX .45s ease-in-out; }
+  .input-gold:focus { border-color:#D4A017 !important; box-shadow: 0 0 0 3px rgba(212,160,23,0.28); outline:none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+function App() {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [shake, setShake] = useState(false);
+
+  /* 已登录且是管理员 → 直进后台 */
+  useEffect(() => {
+    const t = localStorage.getItem('xb_token');
+    const role = localStorage.getItem('xb_role');
+    if (t && role === 'admin') window.location.href = '/admin';
+  }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError('');
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) {
+        setError(d.detail || '登录失败');
+        setShake(true); setTimeout(() => setShake(false), 500);
+        setBusy(false); return;
+      }
+      if (d.user.role !== 'admin') {
+        setError('该账号不是管理员：此入口仅限授权运营人员使用');
+        setShake(true); setTimeout(() => setShake(false), 500);
+        setBusy(false); return;
+      }
+      localStorage.setItem('xb_token', d.token);
+      localStorage.setItem('xb_user', d.user.username);
+      localStorage.setItem('xb_role', 'admin');
+      window.location.href = '/admin';
+    } catch (err) {
+      setError('网络错误，请稍后重试');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6">
+      <div className="w-full max-w-md fade-in">
+        {/* 金色徽标 + 警告条 */}
+        <div className="flex flex-col items-center text-center">
+          <span className="inline-flex items-center justify-center w-16 h-16 rounded-2xl text-[26px] font-semibold"
+                style={{ color: '#1A1408',
+                         backgroundImage: 'linear-gradient(135deg,#E8C460 0%,#D4A017 55%,#B8860B 100%)',
+                         boxShadow: '0 10px 30px rgba(212,160,23,0.35), inset 0 1px 0 rgba(255,255,255,0.3)' }}>
+            运
+          </span>
+          <div className="mt-5 text-[22px] font-semibold text-[#F0D590] tracking-wide">运营管理后台</div>
+          <div className="mt-1 text-[12px] text-white/40 tracking-[0.3em]">XIAOWEI BANK · ADMIN</div>
+          <div className="mt-5 w-full rounded-lg px-4 py-2.5 text-[12px] leading-relaxed"
+               style={{ background: 'rgba(229,72,77,0.10)', border: '1px solid rgba(229,72,77,0.35)', color: '#F0A8AB' }}>
+            仅授权人员访问 · 全部操作留痕审计（admin_logs）· 用户资产数据在本后台不可修改
+          </div>
+        </div>
+
+        {/* 登录表单 */}
+        <form onSubmit={submit}
+              className={'mt-8 rounded-2xl px-8 py-8 border card-panel ' + (shake ? 'shake' : '')}
+              style={{ background: 'rgba(13,19,29,0.92)', borderColor: 'rgba(212,160,23,0.18)',
+                       boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 60px rgba(0,0,0,0.5)' }}>
+          <label className="block text-[12px] mb-1.5 text-white/50">管理员账号</label>
+          <input value={username} onChange={e => setUsername(e.target.value)} autoFocus
+                 placeholder="如：admin"
+                 className="input-gold w-full h-12 rounded-lg px-4 text-[15px] text-white bg-white/5 border border-white/10 transition" />
+          <label className="block text-[12px] mb-1.5 mt-5 text-white/50">密码</label>
+          <input value={password} onChange={e => setPassword(e.target.value)} type="password"
+                 placeholder="请输入密码"
+                 className="input-gold w-full h-12 rounded-lg px-4 text-[15px] text-white bg-white/5 border border-white/10 transition" />
+
+          {error && (
+            <div className="mt-4 rounded-lg px-3 py-2 text-[12px]"
+                 style={{ background: 'rgba(229,72,77,0.10)', border: '1px solid rgba(229,72,77,0.35)', color: '#F0A8AB' }}>
+              {error}
+            </div>
+          )}
+
+          <button type="submit" disabled={busy || !username || !password}
+                  className="mt-6 w-full h-12 rounded-lg text-[15px] font-semibold transition hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ color: '#1A1408',
+                           backgroundImage: 'linear-gradient(135deg,#E8C460 0%,#D4A017 55%,#B8860B 100%)',
+                           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.25), 0 6px 18px rgba(212,160,23,0.30)' }}>
+            {busy ? '核验中...' : '进入运营后台'}
+          </button>
+
+          <div className="mt-4 text-center text-[11px] text-white/30 leading-relaxed">
+            管理员账号见系统种子配置 · 普通用户请从<a href="/login" className="text-[#D4A017] hover:text-[#F0D590]">用户端入口</a>登录
+          </div>
+        </form>
+
+        <div className="mt-6 text-center text-[11px] text-white/25">
+          每一次登录与操作都会写入 admin_logs 审计留痕
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

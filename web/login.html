@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小微 · AI 银行助手 · 登录</title>
+<!-- 三方库全部本地化（vendor/），离线 / 内网环境也能直接打开 -->
+<script src="vendor/tailwind.js"></script>
+<script src="vendor/react.js"></script>
+<script src="vendor/react-dom.js"></script>
+<script src="vendor/babel.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: { 900: '#06090F', 800: '#0A0F18', 700: '#101826' },
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Consolas', 'Menlo', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; background: #06090F; color: #fff; }
+  b, strong { font-weight: 600; }
+
+  /* ---- 极淡网格（黑金体系：0.025 金白线） ---- */
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  /* ---- 极淡星点：三层错位平铺（纯 CSS，无 DOM） ---- */
+  .stars {
+    background-image:
+      radial-gradient(1px 1px at 22px 34px, rgba(255,255,255,0.55), transparent 55%),
+      radial-gradient(1px 1px at 187px 122px, rgba(255,255,255,0.35), transparent 55%),
+      radial-gradient(1.5px 1.5px at 310px 58px, rgba(240,213,144,0.40), transparent 55%),
+      radial-gradient(1px 1px at 96px 208px, rgba(255,255,255,0.30), transparent 55%),
+      radial-gradient(1px 1px at 260px 246px, rgba(240,213,144,0.30), transparent 55%);
+    background-size: 340px 280px;
+    opacity: 0.5;
+  }
+
+  /* ---- 金色光晕（右上 0.15，缓慢漂移） ---- */
+  .aurora {
+    position: absolute;
+    width: 60vw; height: 60vw;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.15;
+    pointer-events: none;
+  }
+  @keyframes drift1 {
+    0%   { transform: translate(-8%, -6%) scale(1); }
+    100% { transform: translate(10%, 8%) scale(1.15); }
+  }
+  .aurora-1 { top: -22vw; right: -14vw; background: radial-gradient(circle, #D4A017 0%, rgba(212,160,23,0) 70%); animation: drift1 26s ease-in-out infinite alternate; }
+
+  /* ---- 中心聚焦 vignette：让 3D 舞台从背景中浮出 ---- */
+  .vignette {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse 62% 58% at 50% 48%,
+      rgba(6,9,15,0) 0%,
+      rgba(6,9,15,0.10) 45%,
+      rgba(6,9,15,0.34) 74%,
+      rgba(6,9,15,0.55) 100%);
+  }
+
+  /* ============================================================
+     3D 旋转流程舞台（纯 CSS 3D，无 three.js）
+     —— perspective 1200 / preserve-3d 环形卡组
+     —— 旋转由 rAF 驱动（30s/圈 匀速线性；与拖拽、光流计算共用同一角度源）
+     ============================================================ */
+  .stage-viewport { perspective: 1200px; perspective-origin: 50% 46%; }
+  .stage-ring {
+    position: absolute; left: 50%; top: 50%;
+    width: 0; height: 0;
+    transform-style: preserve-3d;
+    will-change: transform;
+  }
+  .fcard {
+    position: absolute; left: 0; top: 0;
+    width: 260px; height: 140px;
+    margin-left: -130px; margin-top: -70px;
+    transform-style: preserve-3d;
+    cursor: grab;
+  }
+  .fcard:active { cursor: grabbing; }
+  .fcard-inner, .fcard-back {
+    position: absolute; inset: 0;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    border-radius: 14px;
+    background: linear-gradient(165deg, #101826 0%, #0A0F18 100%);
+    border: 1px solid rgba(212,160,23,0.16);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+    overflow: hidden;
+    transition: opacity .45s ease, filter .45s ease, transform .45s ease, box-shadow .45s ease, border-color .45s ease;
+    will-change: transform, opacity, filter;
+  }
+  .fcard-back { transform: rotateY(180deg); display: flex; align-items: center; padding: 16px 18px; }
+  /* 常态（非当前步骤）：降暗 55% */
+  .fcard-inner.is-dim { opacity: 0.45; filter: brightness(0.55); }
+  /* 当前步骤：放大 1.06 + 全亮 + 主题色发光边（发光色由内联变量 --sc 注入） */
+  .fcard-inner.is-active {
+    opacity: 1; filter: brightness(1.05);
+    transform: scale(1.06);
+    border-color: color-mix(in srgb, var(--sc) 65%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08),
+                0 0 18px color-mix(in srgb, var(--sc) 38%, transparent),
+                0 0 46px color-mix(in srgb, var(--sc) 18%, transparent);
+  }
+  /* hover 单卡：暂停（JS 置标志）+ 提亮 */
+  .fcard:hover .fcard-inner, .fcard:hover .fcard-back {
+    opacity: 1; filter: brightness(1.18);
+  }
+  .fcard-topbar { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--sc); opacity: 0.85; }
+
+  /* 光流弧线：dash 流动 */
+  @keyframes flowDash { to { stroke-dashoffset: -160; } }
+  .arc-line { animation: flowDash 0.9s linear infinite; }
+
+  /* ---- 右侧分栏左缘金色发光竖线 ---- */
+  .panel-edge-glow {
+    position: absolute; top: 0; left: -1px; width: 1px; height: 100%;
+    background: linear-gradient(180deg, rgba(212,160,23,0) 0%, rgba(212,160,23,0.70) 28%, rgba(240,213,144,0.80) 62%, rgba(212,160,23,0) 100%);
+    box-shadow: 0 0 12px rgba(212,160,23,0.45);
+    pointer-events: none;
+  }
+
+  /* ---- 角落部件：绿点 2s 呼吸 ---- */
+  @keyframes breathDot { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
+  .breath-dot { animation: breathDot 2s ease-in-out infinite; }
+
+  /* ---- 日志面板左缘竖向渐变线 ---- */
+  .edge-line-v {
+    position: absolute; top: 0; left: 0; width: 1px; height: 100%;
+    background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.20) 50%, rgba(255,255,255,0) 100%);
+    pointer-events: none;
+  }
+
+  /* ---- 阶段描述淡入 ---- */
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .fade-in { animation: fadeIn 0.4s ease-out; }
+
+  /* ---- 日志行进入 ---- */
+  @keyframes logIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .log-in { animation: logIn 0.35s ease-out; }
+
+  /* ---- 状态点呼吸 ---- */
+  @keyframes dotPulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+  .status-dot { animation: dotPulse 1.4s ease-in-out infinite; }
+
+  /* ---- 分屏过渡 ---- */
+  .pane-left { transition: flex-basis 0.5s ease-out; }
+  .pane-scale { transition: transform 0.5s ease-out; }
+  .pane-right { transition: transform 0.5s ease-out, opacity 0.5s ease-out; }
+
+  /* ---- 表单抖动 ---- */
+  @keyframes shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(5px); } }
+  .shake { animation: shake 0.45s ease-in-out; }
+
+  /* 滚动条 */
+  .scroll-thin::-webkit-scrollbar { width: 6px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+/** @jsxRuntime classic */
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ===================== 通用工具 ===================== */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+const fmtTime = (ms) => {
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+};
+const COLORS = {
+  blue: '#4C9EFF', cyan: '#00E5C7', purple: '#B678F0', green: '#2FD07A', gold: '#D4A017',
+};
+
+/* ===================== 流程卡定义（8 张，环形排布）
+   —— 步骤定义与颜色语义沿用原 flow-steps 状态机：蓝/青/紫/绿/金
+   —— stage→card 映射：原 9 阶段中「处理确认·执行」与「执行完成」合并到最后一张卡 */
+const FLOW_CARDS = [
+  { key: 'speak',   name: '开口即办',   flow: '怎么使用',           color: COLORS.blue,
+    desc: '不用研究菜单：直接说出需求，例如"给妈妈转 2000"，小微听懂就办。' },
+  { key: 'parse',   name: '听懂意图',   flow: '智能理解',           color: COLORS.gold,
+    desc: 'AI 解析你的自然语言，自动识别转账、查询、理财等需求并补齐要素。' },
+  { key: 'tool',    name: '实时查账',   flow: '功能 · 随问随答',    color: COLORS.cyan,
+    desc: '直连银行数据：余额、账单、持仓实时查询，只读操作即时完成。' },
+  { key: 'mcp',     name: '行情同步',   flow: '功能 · 有据可依',    color: COLORS.purple,
+    desc: '经 MCP 协议同步外部实时行情与资讯，让每一个回答都有据可依。' },
+  { key: 'merge',   name: '整合答案',   flow: '功能 · 结构化结论',  color: COLORS.gold,
+    desc: '汇总银行数据与外部信息，生成带风险提示的结论，不只给一个数字。' },
+  { key: 'respond', name: '秒级响应',   flow: '体验 · 流式送达',    color: COLORS.blue,
+    desc: '回答流式输出即问即答；涉及资金操作时附确认卡，要素一目了然。' },
+  { key: 'confirm', name: '你说了算',   flow: '保护 · 本人确认',    color: COLORS.green,
+    desc: '转账、冻结等敏感操作必须本人亲自确认，AI 绝不代签、不可绕过。' },
+  { key: 'safe',    name: '资金级安全', flow: '保护 · 全程留痕',    color: COLORS.green,
+    desc: '大额双要素核验、密码错 3 次自动锁定、每一笔操作留痕可追溯。' },
+];
+const STAGE_TO_CARD = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 7 };
+
+const STAGES = {
+  1: { text: '说出需求，开口即办',           color: COLORS.blue },
+  2: { text: 'AI 听懂你的意图',             color: COLORS.gold },
+  3: { text: '实时查询银行数据',             color: COLORS.cyan },
+  4: { text: '同步外部实时行情',             color: COLORS.purple },
+  5: { text: '为你整合最优答案',             color: COLORS.gold },
+  6: { text: '秒级响应，流式送达',           color: COLORS.blue },
+  7: { text: '重要操作，由你亲自确认',       color: COLORS.green },
+  8: { text: '资金级安全，全程留痕',         color: COLORS.gold },
+  9: { text: '办理完成，随时继续',           color: COLORS.green },
+};
+
+/* ============================================================
+   3D 立体旋转流程舞台
+   —— 8 张卡 rotateY(i×45°) translateZ(420px) 组成环形；
+      rAF 驱动 ring 匀速旋转（30s/圈），拖拽 / hover 可接管；
+      当前步骤卡放大发光，其余降暗；相邻卡之间画发光弧线（平面 SVG overlay）。
+   —— 全部动画只写 transform / opacity / filter / SVG path d，不触发布局属性。 */
+const RING_RADIUS = 420;
+const PERSPECTIVE = 1200;
+const SPIN_PERIOD_MS = 30000;   // 30s 一圈
+const DRAG_SENS = 0.35;         // px → deg
+
+function FlowStage3D({ activeCard }) {
+  const ringRef = useRef(null);
+  const arcGlowRef = useRef(null);
+  const arcMainRef = useRef(null);
+  const degRef = useRef(0);
+  const hoverRef = useRef(false);
+  const draggingRef = useRef(false);
+  const resumeAtRef = useRef(0);
+  const activeRef = useRef(activeCard);
+  activeRef.current = activeCard;
+
+  /* 投影：卡 i 在舞台平面内的屏幕坐标（含透视近大远小） */
+  const project = (i, deg) => {
+    const a = ((deg + i * 45) * Math.PI) / 180;
+    const x3 = RING_RADIUS * Math.sin(a);
+    const z3 = RING_RADIUS * Math.cos(a);
+    const s = PERSPECTIVE / (PERSPECTIVE - z3);
+    return { x: x3 * s, s };
+  };
+
+  useEffect(() => {
+    let raf;
+    let last = performance.now();
+    const tick = (now) => {
+      const dt = Math.min(64, now - last);
+      last = now;
+      if (!hoverRef.current && !draggingRef.current && now >= resumeAtRef.current) {
+        degRef.current += (dt / SPIN_PERIOD_MS) * 360;   // 30s/圈 匀速线性
+      }
+      const deg = degRef.current;
+      if (ringRef.current) ringRef.current.style.transform = 'rotateY(' + deg + 'deg)';
+
+      /* 光流弧线：当前步骤卡 → 相邻下一卡（平面 SVG overlay 内实时重投影） */
+      const ai = activeRef.current;
+      if (ai != null && arcMainRef.current && arcGlowRef.current) {
+        const p1 = project(ai, deg);
+        const p2 = project((ai + 1) % 8, deg);
+        const y1 = -(70 * p1.s + 6);
+        const y2 = -(70 * p2.s + 6);
+        const mx = (p1.x + p2.x) / 2;
+        const lift = Math.max(y1, y2) - 56;
+        const d = 'M ' + p1.x.toFixed(1) + ' ' + y1.toFixed(1)
+                + ' Q ' + mx.toFixed(1) + ' ' + lift.toFixed(1)
+                + ' ' + p2.x.toFixed(1) + ' ' + y2.toFixed(1);
+        arcMainRef.current.setAttribute('d', d);
+        arcGlowRef.current.setAttribute('d', d);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  /* 拖拽：pointer 控制角度，松手 3s 后恢复自动 */
+  const onPointerDown = (e) => {
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.currentTarget._lastX = e.clientX;
+  };
+  const onPointerMove = (e) => {
+    if (!draggingRef.current) return;
+    const dx = e.clientX - e.currentTarget._lastX;
+    e.currentTarget._lastX = e.clientX;
+    degRef.current += dx * DRAG_SENS;
+  };
+  const onPointerUp = () => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    resumeAtRef.current = performance.now() + 3000;
+  };
+
+  const arcColor = activeCard != null ? FLOW_CARDS[activeCard].color : 'transparent';
+
+  return (
+    <div className="stage-viewport relative select-none" style={{ width: 860, height: 520 }}
+         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+         onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+      {/* 舞台中心金色微光 */}
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+           style={{ width: 460, height: 260, filter: 'blur(70px)', opacity: 0.14,
+                    background: 'radial-gradient(ellipse, #D4A017 0%, rgba(212,160,23,0) 70%)' }} />
+
+      {/* 环形卡组 */}
+      <div className="stage-ring" ref={ringRef}>
+        {FLOW_CARDS.map((c, i) => (
+          <div key={c.key} className="fcard"
+               style={{ transform: 'rotateY(' + i * 45 + 'deg) translateZ(' + RING_RADIUS + 'px)' }}
+               onMouseEnter={() => { hoverRef.current = true; }}
+               onMouseLeave={() => { hoverRef.current = false; }}>
+            <div className={'fcard-inner' + (activeCard === i ? ' is-active' : activeCard != null ? ' is-dim' : '')}
+                 style={{ '--sc': c.color }}>
+              <span className="fcard-topbar" />
+              <div className="h-full flex flex-col justify-between px-5 py-3.5">
+                <div className="flex items-start justify-between">
+                  <span className="font-mono text-[11px] tracking-[0.2em]" style={{ color: c.color }}>
+                    {String(i + 1).padStart(2, '0')}
+                  </span>
+                  <span className="font-mono text-[10px] tracking-[0.12em]" style={{ color: 'rgba(255,255,255,0.38)' }}>
+                    {c.flow}
+                  </span>
+                </div>
+                <div className="text-[21px] font-semibold text-white leading-tight pb-1">{c.name}</div>
+              </div>
+            </div>
+            {/* 背面：该步骤详细说明（旋转至背向时可见） */}
+            <div className={'fcard-back' + (activeCard === i ? ' is-active' : activeCard != null ? ' is-dim' : '')}
+                 style={{ '--sc': c.color }}>
+              <span className="fcard-topbar" />
+              <div>
+                <div className="font-mono text-[10px] tracking-[0.16em] mb-1.5" style={{ color: c.color }}>
+                  {String(i + 1).padStart(2, '0')} · {c.flow}
+                </div>
+                <div className="text-[11.5px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.62)' }}>
+                  {c.desc}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* 光流弧线 overlay（平面层，位于卡组之外、卡之上视觉由透明度控制） */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ overflow: 'visible' }} viewBox="-560 -300 1120 600">
+        <path ref={arcGlowRef} fill="none" stroke={arcColor} strokeWidth="7" strokeLinecap="round"
+              strokeDasharray="10 160" className="arc-line" style={{ opacity: activeCard != null ? 0.30 : 0, filter: 'blur(3px)', transition: 'stroke .4s' }} />
+        <path ref={arcMainRef} fill="none" stroke={arcColor} strokeWidth="2" strokeLinecap="round"
+              strokeDasharray="10 160" className="arc-line" style={{ opacity: activeCard != null ? 0.9 : 0, transition: 'stroke .4s' }} />
+      </svg>
+
+    </div>
+  );
+}
+
+/* ===================== 阶段描述器 ===================== */
+function StageIndicator({ stage }) {
+  const s = STAGES[stage] || STAGES[1];
+  return (
+    <div key={stage} className="fade-in flex items-center justify-center gap-2.5" style={{ marginTop: 32 }}>
+      <span className="status-dot inline-block w-2 h-2 rounded-full" style={{ background: s.color }} />
+      <span className="text-[14px]" style={{ color: 'rgba(255,255,255,0.75)' }}>{s.text}</span>
+    </div>
+  );
+}
+
+/* ===================== 终端式滚动日志 ===================== */
+function TerminalLog({ lines }) {
+  const shown = lines.slice(-5);
+  return (
+    <div className="absolute bottom-8 left-8 w-[340px] font-mono text-[11px] pl-3.5"
+         style={{
+           lineHeight: 1.8, letterSpacing: '0.02em',
+           borderLeft: '1px solid transparent',
+           borderImage: 'linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.35) 50%, rgba(255,255,255,0) 100%) 1 / 0 0 0 1px',
+         }}>
+      {shown.map((l, i) => (
+        <div key={l.id} className="log-in whitespace-nowrap overflow-hidden text-ellipsis"
+             style={{ color: i === shown.length - 1 ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.4)' }}>{l.text}</div>
+      ))}
+    </div>
+  );
+}
+
+/* ===================== 右上角系统状态 ===================== */
+function SystemStatus({ latency }) {
+  return (
+    <div className="absolute right-8 text-right font-mono text-[11px]" style={{ top: 84 }}
+         style={{ lineHeight: 1.8, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.35)' }}>
+      <div className="flex items-center justify-end gap-2">
+        <span className="breath-dot inline-block rounded-full"
+              style={{ width: 6, height: 6, background: COLORS.green, boxShadow: '0 0 6px rgba(16,185,129,0.8)' }} />
+        <span>SECURE CHANNEL · LIVE</span>
+      </div>
+      {/* LATENCY 为演示动画随机值，非实测 */}
+      <div>LATENCY {latency}ms · SIM</div>
+    </div>
+  );
+}
+
+/* ===================== 统计计数器 ===================== */
+/* 旧右下角 MESSAGES / TOOL CALLS / MCP SYNC 装饰统计已删除：
+   它们是随机生成的演示数字（假数据），与真实业务无关；
+   真实聚合统计统一在 /admin 管理后台概览页查看。 */
+
+/* ===================== 登录 / 注册面板 ===================== */
+/* 0 icon 约束：密码可见性切换改为文字按钮 */
+const EyeText = ({ off, onToggle }) => (
+  <button type="button" onClick={onToggle} tabIndex={-1}
+    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.45)',
+             fontSize: 12, padding: '0 4px' }}>
+    {off ? '显示' : '隐藏'}
+  </button>
+);
+function AuthPanel({ mode, onBack }) {
+  const [login, setLogin] = useState({ username: '', password: '' });
+  const [reg, setReg] = useState({ username: '', password: '', confirm: '' });
+  const [showPwd, setShowPwd] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [shake, setShake] = useState(false);
+  const [regErr, setRegErr] = useState('');
+
+  const isRegister = mode === 'register';
+
+  // 真实对接 /api/auth/*；仅当后端不可达（网络异常）才回落 mock。
+  // 后端明确返回 401/409 时如实报错 —— 不能再用 mock 绕过真实认证。
+  const callAuth = async (url, body) => {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) return data;
+      return { ok: false, error: data.detail || ('请求失败（HTTP ' + r.status + '）') };
+    } catch (e) { /* 后端不可达 → 走 mock */ }
+    return mockAuth(url, body);
+  };
+  const mockAuth = async (url, body) => {
+    await sleep(800);
+    if (url.endsWith('/register')) return { ok: true, token: 'demo-' + Date.now(), user: { username: body.username } };
+    if (url.endsWith('/guest')) return { ok: true, token: 'guest-' + Date.now(), user: { username: body.username || 'guest' } };
+    // login
+    if (body.password === '123456') return { ok: true, token: 'demo-' + Date.now(), user: { username: body.username } };
+    return { ok: false, error: '密码错误（演示密码 123456）' };
+  };
+
+  const go = (role) => {
+    // A3：登录/新会话强制重置隐私模式为"开"
+    localStorage.removeItem('xb_privacy');
+    // C5：管理员登录默认进管理后台；普通用户进用户端
+    window.location.href = role === 'admin' ? '/admin' : '/chat';
+  };
+  const triggerShake = () => { setShake(true); setTimeout(() => setShake(false), 500); };
+
+  const onLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError('');
+    const res = await callAuth('/api/auth/login', login);
+    if (res.ok) {
+      localStorage.setItem('xb_token', res.token);
+      localStorage.setItem('xb_user', (res.user && res.user.username) || login.username);
+      // A3：重新登录 → 隐私模式强制回到「开」（清掉上次会话的关闭标记）
+      localStorage.removeItem('xb_privacy');
+      // 登录切换用户时清掉旧 thread_id，避免复用他人会话导致 403
+      localStorage.removeItem('xb_thread');
+      go((res.user && res.user.role) || 'user');
+    } else {
+      setError(res.error || '登录失败，请重试');
+      triggerShake();
+    }
+    setLoading(false);
+  };
+  const onGuest = async () => {
+    setLoading(true); setError('');
+    const res = await callAuth('/api/auth/guest', { username: 'guest' });
+    if (res.ok) {
+      localStorage.setItem('xb_token', res.token);
+      localStorage.setItem('xb_user', 'guest');
+      localStorage.removeItem('xb_privacy');
+      // 游客登录也刷新 thread_id，防止拿到上一个用户的会话
+      localStorage.removeItem('xb_thread');
+      go('user');
+    }
+    setLoading(false);
+  };
+  const onRegister = async (e) => {
+    e.preventDefault();
+    setRegErr('');
+    if (reg.password !== reg.confirm) { setRegErr('两次输入的密码不一致'); return; }
+    setLoading(true);
+    const res = await callAuth('/api/auth/register', reg);
+    if (res.ok) {
+      localStorage.setItem('xb_token', res.token);
+      localStorage.setItem('xb_user', reg.username);
+      localStorage.removeItem('xb_privacy');
+      // 注册新账号后同样使用新的 thread_id
+      localStorage.removeItem('xb_thread');
+      go('user');
+    } else {
+      setRegErr(res.error || '注册失败');
+      triggerShake();
+    }
+    setLoading(false);
+  };
+
+  /* ---- 视觉常量 ---- */
+  const inputCls = 'w-full h-12 bg-white/5 border border-white/10 rounded-lg px-4 text-[16px] text-white placeholder-white/25 outline-none focus:border-[#D4A017] focus:ring-2 focus:ring-[rgba(212,160,23,0.35)] transition';
+  const labelCls = 'block text-[12px] mb-1.5 text-white/50';
+  const submitCls = 'w-full h-12 rounded-lg text-[15px] font-semibold text-[#1A1408] hover:brightness-110 transition disabled:opacity-60';
+  const submitStyle = { backgroundImage: 'linear-gradient(135deg,#E8C460 0%,#D4A017 55%,#B8860B 100%)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.25), 0 4px 14px rgba(212,160,23,0.25)' };
+  const errBarCls = 'rounded-lg px-3 py-2 text-[12px]';
+  const errBarStyle = { background: 'rgba(250,204,21,0.10)', border: '1px solid rgba(250,204,21,0.30)', color: '#FDE68A' };
+  const hr = <span className="h-px flex-1" style={{ background: 'rgba(255,255,255,0.10)' }} />;
+
+    return (
+    <div className="pane-right h-full flex flex-col justify-between overflow-hidden"
+         style={{
+           boxSizing: 'border-box', width: '100%', minWidth: 560, padding: '48px 56px',
+           transform: mode === 'full' ? 'translateX(100%)' : 'translateX(0)',
+           transition: 'transform 500ms ease-out, opacity 500ms ease-out',
+           opacity: mode === 'full' ? 0 : 1,
+           pointerEvents: mode === 'full' ? 'none' : 'auto',
+         }}>
+      {/* 顶部：小 logo 行 */}
+      <div className="flex items-center gap-2.5 shrink-0">
+        <span className="rounded-full shrink-0"
+              style={{ width: 8, height: 8, background: 'linear-gradient(135deg,#E8C460,#D4A017)', boxShadow: '0 0 8px rgba(212,160,23,0.7)' }} />
+        <span className="text-[14px] font-bold text-white">小微</span>
+      </div>
+
+      {/* 中部：表单垂直居中 */}
+      <div className="flex-1 flex items-center justify-center min-h-0">
+        {!isRegister ? (
+          <form onSubmit={onLogin} className={'w-full flex flex-col gap-5 ' + (shake ? 'shake' : '')}
+                style={{ maxWidth: 360 }}>
+            <div>
+              <div className="text-[24px] font-bold text-white leading-tight">欢迎回来</div>
+              <div className="text-[13px] mt-2 text-white/40">登录以继续</div>
+            </div>
+            {error && <div className={errBarCls} style={errBarStyle}>{error}</div>}
+            <div className="flex flex-col gap-3.5">
+              <div>
+                <label className={labelCls}>用户名</label>
+                <input className={inputCls} placeholder="请输入用户名" value={login.username}
+                       onChange={(e) => setLogin({ ...login, username: e.target.value })} autoFocus />
+              </div>
+              <div>
+                <label className={labelCls}>密码</label>
+                <div className="relative">
+                  <input className={inputCls + ' pr-16'} type={showPwd ? 'text' : 'password'} placeholder="请输入密码"
+                         value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} />
+                  <button type="button" onClick={() => setShowPwd((v) => !v)} aria-label="切换密码可见"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 p-1">
+                    <EyeText off={showPwd} onToggle={() => setShowPwd(v => !v)} />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <button type="submit" disabled={loading} className={submitCls} style={submitStyle}>
+              {loading ? '验证中...' : '立即登录'}
+            </button>
+            {/* 演示环境账号提示，避免观众不知道用什么账号登录 */}
+            <div className="text-[11px] leading-relaxed text-white/30 text-center">
+              演示账号：user1 / user2，密码均为 123456（也可注册新账号）
+            </div>
+            <div className="flex items-center gap-3">
+              {hr}
+              <span className="text-[11px] text-white/25">或</span>
+              {hr}
+            </div>
+            <button type="button" onClick={onGuest}
+                    className="text-[13px] text-white/45 hover:text-white/75 transition text-center">游客模式快速体验</button>
+          </form>
+        ) : (
+          <form onSubmit={onRegister} className={'w-full flex flex-col gap-5 ' + (shake ? 'shake' : '')}
+                style={{ maxWidth: 360 }}>
+            <div>
+              <div className="text-[24px] font-bold text-white leading-tight">创建账户</div>
+              <div className="text-[13px] mt-2 text-white/40">注册以开始</div>
+            </div>
+            {regErr && <div className={errBarCls} style={errBarStyle}>{regErr}</div>}
+            <div className="flex flex-col gap-3.5">
+              <div>
+                <label className={labelCls}>用户名</label>
+                <input className={inputCls} placeholder="设置用户名" value={reg.username}
+                       onChange={(e) => setReg({ ...reg, username: e.target.value })} autoFocus />
+              </div>
+              <div>
+                <label className={labelCls}>密码</label>
+                <div className="relative">
+                  <input className={inputCls + ' pr-16'} type={showPwd ? 'text' : 'password'} placeholder="设置密码"
+                         value={reg.password} onChange={(e) => setReg({ ...reg, password: e.target.value })} />
+                  <button type="button" onClick={() => setShowPwd((v) => !v)} aria-label="切换密码可见"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 p-1">
+                    <EyeText off={showPwd} onToggle={() => setShowPwd(v => !v)} />
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>确认密码</label>
+                <div className="relative">
+                  <input className={inputCls + (regErr ? ' border-amber-400/70' : '') + ' pr-16'} type={showPwd ? 'text' : 'password'}
+                         placeholder="再次输入密码" value={reg.confirm}
+                         onChange={(e) => setReg({ ...reg, confirm: e.target.value })} />
+                  <button type="button" onClick={() => setShowPwd((v) => !v)} aria-label="切换密码可见"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 p-1">
+                    <EyeText off={showPwd} onToggle={() => setShowPwd(v => !v)} />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <button type="submit" disabled={loading} className={submitCls} style={submitStyle}>
+              {loading ? '注册中...' : '注册并登录'}
+            </button>
+          </form>
+        )}
+      </div>
+
+      {/* 底部：返回（左对齐） */}
+      <div className="shrink-0">
+        <button type="button" onClick={onBack}
+                className="text-[13px] text-white/35 hover:text-white/70 transition">返回</button>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== 主页面 ===================== */
+function LoginPage() {
+  const [view, setView] = useState('full'); // full | login | register
+  const [stage, setStage] = useState(1);
+  const [logLines, setLogLines] = useState([]);
+  const [latency, setLatency] = useState(12);
+
+  const loopStart = useRef(0);
+  const logId = useRef(0);
+
+  // 已登录 → 直接进 /chat
+  useEffect(() => {
+    if (localStorage.getItem('xb_token')) {
+      const t = location.pathname;
+      window.location.href = t.endsWith('.html') ? 'index.html' : '/chat';
+    }
+  }, []);
+
+  // LATENCY 每 3 秒微变
+  useEffect(() => {
+    const id = setInterval(() => setLatency(8 + Math.floor(Math.random() * 13)), 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  const pushLog = useCallback((msg) => {
+    const t = performance.now() - loopStart.current;
+    logId.current += 1;
+    setLogLines((prev) => [...prev, { id: logId.current, text: '[' + fmtTime(t) + '] ' + msg }]);
+  }, []);
+
+  // 叙事状态机：沿用原 flow-steps 的 16s 时序与文案（卸载时清理）
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      while (!cancelled) {
+        loopStart.current = performance.now();
+        if (cancelled) break;
+        setStage(1); pushLog('已收到你的需求');
+        await sleep(1500);
+        if (cancelled) break;
+        setStage(2); pushLog('正在理解你的意图');
+        await sleep(2000);
+        if (cancelled) break;
+        setStage(3); pushLog('正在查询银行数据');
+        await sleep(2200);
+        if (cancelled) break;
+        setStage(4); pushLog('正在同步外部行情');
+        await sleep(2200);
+        if (cancelled) break;
+        setStage(5); pushLog('正在为你整合答案');
+        await sleep(1500);
+        if (cancelled) break;
+        setStage(6); pushLog('回复已送达');
+        await sleep(1500);
+        if (cancelled) break;
+        setStage(7); pushLog('重要操作，等待你确认');
+        await sleep(1500);
+        if (cancelled) break;
+        setStage(8); pushLog('操作已安全执行');
+        await sleep(2500);
+        if (cancelled) break;
+        setStage(9); pushLog('办理完成，随时继续');
+        await sleep(800);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, []);
+
+  const split = view !== 'full';
+
+  return (
+    <div className="relative h-screen w-screen overflow-hidden"
+         style={{ background: 'linear-gradient(180deg, #06090F 0%, #0A0F18 55%, #0D131D 100%)', minWidth: 1024 }}>
+      <div className="absolute inset-0 stars pointer-events-none" />
+      <div className="aurora aurora-1" />
+      <div className="absolute inset-0 grid-bg pointer-events-none" />
+      <div className="vignette" />
+
+      {/* 登录 / 注册：固定右上角（full 态可见；点开后分屏态淡出，与旧底部按钮同一套过渡） */}
+      <div className="absolute flex items-center gap-3"
+           style={{ top: 24, right: 32, zIndex: 30, transition: 'opacity 500ms ease-out',
+                    opacity: split ? 0 : 1, pointerEvents: split ? 'none' : 'auto' }}>
+        <button onClick={() => setView('login')}
+                className="rounded-lg text-[14px] font-semibold hover:brightness-110 hover:scale-[1.02] active:scale-[0.98] transition"
+                style={{ width: 120, height: 40, color: '#1A1408',
+                         backgroundImage: 'linear-gradient(135deg,#E8C460 0%,#D4A017 55%,#B8860B 100%)',
+                         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.25), 0 4px 14px rgba(212,160,23,0.25)' }}>登 录</button>
+        <button onClick={() => setView('register')}
+                className="rounded-lg text-[14px] font-semibold text-white bg-white/[0.06] backdrop-blur border border-white/[0.18] hover:bg-white/10 hover:scale-[1.02] active:scale-[0.98] transition"
+                style={{ width: 120, height: 40 }}>注 册</button>
+      </div>
+
+      <div className="relative h-full flex">
+        {/* 左侧动画区：单一中心轴线，自顶向下 96px 起 */}
+        <div className="pane-left relative h-full flex flex-col items-center justify-start px-10"
+             style={{ flex: '0 0 auto', width: split ? '30%' : '100%', paddingTop: 72 }}>
+          <div className='pane-scale relative flex flex-col items-center'
+               style={{ transformOrigin: 'top center', transform: split ? 'scale(0.7)' : 'scale(1)' }}>
+            {/* 标题组：eyebrow → 8px → 主标题 → 12px → 副标题 */}
+            <div className="flex flex-col items-center">
+              <div className="flex flex-col items-center gap-1.5">
+                <span style={{ width: 24, height: 1, background: 'rgba(255,255,255,0.18)' }} />
+                <span className="text-[11px]" style={{ letterSpacing: '0.35em', color: 'rgba(255,255,255,0.4)', paddingLeft: '0.35em' }}>AI BANKING AGENT</span>
+                <span style={{ width: 24, height: 1, background: 'rgba(255,255,255,0.18)' }} />
+              </div>
+              <div className="text-[32px] font-semibold leading-tight" style={{ marginTop: 8 }}>
+                <span className="bg-clip-text text-transparent" style={{ backgroundImage: 'linear-gradient(135deg,#E8C460 0%,#D4A017 55%,#B8860B 100%)' }}>小微</span>
+                <span className="text-white"> · AI 银行助手</span>
+              </div>
+              <div className="text-[14px]" style={{ marginTop: 12, color: '#B9AE8E' }}>每一条消息，都有安全的回响</div>
+            </div>
+
+            {/* 3D 立体旋转流程舞台 */}
+            <div style={{ marginTop: 8 }} className="flex justify-center">
+              <FlowStage3D activeCard={STAGE_TO_CARD[stage]} />
+            </div>
+
+            {/* 阶段描述器：舞台正下方（与卡片点亮同步） */}
+            <StageIndicator stage={stage} />
+
+            <div className="text-[11px]" style={{ marginTop: 20, color: 'rgba(255,255,255,0.3)' }}>演示环境 · 所有数据均为模拟 · 拖拽可旋转</div>
+          </div>
+
+          {/* 角落小部件：贴左区边缘 32px，不随中轴缩放 */}
+          <div style={{ transition: 'opacity 500ms ease-out', opacity: split ? 0 : 1 }}><TerminalLog lines={logLines} /></div>
+          <div style={{ transition: 'opacity 500ms ease-out', opacity: split ? 0 : 1 }}><SystemStatus latency={latency} /></div>
+
+        </div>
+
+        {/* 右侧登录 / 注册：全高分栏，占 70% 贴右缘（30/70 分屏） */}
+        <div className="relative h-full overflow-hidden pane-left"
+             style={{
+               width: split ? '70%' : 0,
+               minWidth: split ? 460 : 0,
+               flex: '0 0 auto',
+               background: split ? 'rgba(10,15,24,0.78)' : 'transparent',
+               backdropFilter: split ? 'blur(24px)' : 'none',
+               WebkitBackdropFilter: split ? 'blur(24px)' : 'none',
+               borderLeft: split ? '1px solid rgba(212,160,23,0.18)' : 'none',
+             }}>
+          {split && <span className="panel-edge-glow" />}
+          <AuthPanel mode={view} onBack={() => setView('full')} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== 挂载 ===================== */
+const el = document.getElementById('root');
+if (ReactDOM.createRoot) {
+  ReactDOM.createRoot(el).render(<LoginPage />);
+} else {
+  ReactDOM.render(<LoginPage />, el);
+}
+</script>
+</body>
+</html>

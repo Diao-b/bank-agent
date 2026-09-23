@@ -1,0 +1,12 @@
+# AI 银行智能体 · M1 依赖
+# 括号内为实测通过版本（Python 3.13.12）
+
+fastapi>=0.110                 # 0.141.1
+uvicorn[standard]>=0.27        # 0.4x
+pymysql>=1.1.0                 # 1.2.0
+openai>=1.40                   # 2.54.0
+requests>=2.31
+python-dotenv>=1.0
+langgraph>=0.2                 # 1.2.11（实测）
+langgraph-checkpoint-sqlite>=2.0  # 3.1.1（实测，提供 SqliteSaver）
+mcp>=1.2                          # 官方 Python SDK，对接阿里云百炼 MCP 广场（实测 2.1.1）
