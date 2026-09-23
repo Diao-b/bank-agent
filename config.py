@@ -117,6 +117,15 @@ DEV_ALLOW_GUEST: bool = (_get("DEV_ALLOW_GUEST", "1") or "1").lower() not in ("0
 ADMIN_PASSWORD: str = _get("ADMIN_PASSWORD", "admin123")
 # 存量无密码用户的演示回填密码（ensure_auth_schema 使用）。生产建议在 .env 覆盖。
 DEFAULT_DEMO_PASSWORD: str = _get("DEFAULT_DEMO_PASSWORD", "123456")
+# P0.2 一次性操作授权票据（op_token）的 TTL（秒）。票据签发后该时长内单次有效。
+OP_TOKEN_TTL_SECONDS: int = int(_get("OP_TOKEN_TTL_SECONDS", "300"))
+# 开发态"转账回滚注入"开关（X-Test-Inject: receiver-fail），仅供基线测试模拟"收款方入账失败"。
+# ★ 与 BANK_ALLOW_ANON 解耦：安全闸门（匿名回落）不应兼任测试钩子开关 ——
+#   否则 P0.1 把 BANK_ALLOW_ANON 收紧为 0 时，会静默破坏"事务回滚"回归用例。
+#   默认非生产开启（与 DEV_ALLOW_GUEST 同口径），production 无条件关闭。
+ALLOW_TEST_INJECT: bool = (
+    (_get("ALLOW_TEST_INJECT", "1") or "1").lower() not in ("0", "false", "no")
+) and ENV != "production"
 
 
 def auth_guest_enabled() -> bool:

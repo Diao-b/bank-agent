@@ -44,6 +44,7 @@ import profile_db  # 用户画像数据层（MySQL bank_agent）
 import rules  # C6：风控参数单源（system_config）
 from agent.driver import MainDriver
 from utils import event_bus, inbox, mcp_client, paypass, security
+from utils import op_auth as _op_auth
 from utils.user_provision import provision_new_user
 from utils.digital_human import digital_human  # 数字柜员桥接层（Fay 渲染端，独立进程）
 from utils import appearance as appearance_cfg  # 数字人形象配置（人物模型 + 背景）
@@ -876,7 +877,8 @@ def _bank_headers(req: Request | None) -> dict:
         return {}
     out = {}
     for key, value in req.headers.items():
-        if key.lower() in ("authorization", "x-user-token", "content-type", "accept"):
+        if key.lower() in ("authorization", "x-user-token", "content-type", "accept",
+                           "x-op-token"):
             out[key] = value
     return out
 
@@ -1363,6 +1365,68 @@ def pay_password_status(request: Request = None):
     from utils import paypass
     uid = _resolve_uid(request)
     return {"ok": True, "has_password": paypass.has_password(uid), "locked": paypass.is_locked(uid)}
+
+
+# --------------------------------------------------------------------------- #
+# P0.2：一次性操作授权票据签发端点（op-auth token）
+#   ★ 直连写端点（transfer / buy / redeem / freeze / ...）消费本票据；无有效票据 → 4xx。
+#   ★ 本端点要求"已通过短信验证码（scene 匹配且未过期）+ 已通过支付密码"，
+#     即 walk 真实的 verify/paypass 路径后才发证 —— 生产无任何绕过分支。
+#   ★ write_flow 在图内核实通过后，直接在进程内调 _op_auth.issue_op_token 发证，
+#     不经过本 HTTP 端点；本端点仅供对话流之外的"真实票据路径"测试 / 外部合规调用使用。
+# --------------------------------------------------------------------------- #
+class _OpAuthorizeReq(BaseModel):
+    scene: str
+    code: str | None = None  # 短信验证码（该 scene 需短信核实时必填；由调用方从收件箱取）
+
+
+@app.post("/api/op/authorize")
+def op_authorize(req: _OpAuthorizeReq, request: Request = None):
+    uid = _resolve_uid(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="请先登录")
+    # 1) 支付密码必须已通过（进程内标记，由 /api/pay/password/verify 设置）
+    from utils import paypass
+    if not paypass.has_passed(uid):
+        raise HTTPException(
+            status_code=401,
+            detail="请先完成支付密码核验（/api/pay/password/verify）后再申请操作授权",
+        )
+    # 2) 该 scene 必须存在一条"已核验且未过期"的验证码（防绕过短信核验直接发证）
+    from utils import verify_codes
+    try:
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, status, verified_at, code_hash FROM verification_codes "
+                    "WHERE user_id=%s AND scene=%s AND status='verified' "
+                    "AND verified_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE) "
+                    "ORDER BY id DESC LIMIT 1",
+                    (int(uid), req.scene),
+                )
+                vc = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        vc = None
+    if not vc:
+        raise HTTPException(
+            status_code=401,
+            detail="本次操作缺少有效的短信验证码核验，请先获取并核验验证码",
+        )
+    # 2.5) 若调用方带来了验证码，额外比对哈希，确保"确实核验过这一条"
+    if req.code:
+        if verify_codes._hash(req.code.strip()) != vc["code_hash"]:
+            raise HTTPException(status_code=401, detail="短信验证码与已核验记录不符")
+    # 3) 签发一次性票据（单次有效、按 scene 绑定、短 TTL）
+    r = _op_auth.issue_op_token(uid, req.scene)
+    return {
+        "ok": True,
+        "token": r["token"],
+        "expires_in": r["expires_in"],
+        "scene": r["scene"],
+    }
 
 
 # --------------------------------------------------------------------------- #

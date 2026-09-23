@@ -569,10 +569,10 @@ def execute_transfer(
 
                 # ---- 4) 站内轨：收款方入账 + 收入流水 + 收款方回执 + 收款方留痕 ----
                 if track == "insite":
-                    # ★ 开发态滚回测试注入：仅当 BANK_ALLOW_ANON=1（dev）时生效，
+                    # ★ 开发态回滚测试注入：仅当 ALLOW_TEST_INJECT 开启（非生产）时生效，
                     #   通过请求头 X-Test-Inject: receiver-fail 触发，模拟"收款方入账失败"，
-                    #   用于验证整笔转账回滚（生产态 BANK_ALLOW_ANON=0 时完全失效）。
-                    if config.BANK_ALLOW_ANON and inject == "receiver-fail":
+                    #   用于验证整笔转账回滚（生产恒关；见 config.ALLOW_TEST_INJECT）。
+                    if config.ALLOW_TEST_INJECT and inject == "receiver-fail":
                         raise RuntimeError("【测试注入】模拟收款方入账失败")
 
                     recv_new = Decimal(str(insite_target["balance"])) + amount

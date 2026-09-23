@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import profile_db  # noqa: E402
 from mock_bank import db  # noqa: E402
 from mock_bank.main import app  # noqa: E402
+from utils import op_auth  # noqa: E402  # P0.2：取消订阅写端点需一次性操作票据
 
 client = TestClient(app)
 
@@ -50,6 +51,16 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 def hdr(uid: int) -> dict:
     return {"Authorization": f"Bearer {profile_db.issue_token(uid)}"}
+
+
+def cancel_hdr(uid: int) -> dict:
+    """P0.2：取消订阅写端点需一次性操作票据（场景=cancel_subscription），走真实 ticket 路径。"""
+    h = hdr(uid)
+    try:
+        h["X-Op-Token"] = op_auth.issue_op_token(uid, "cancel_subscription")["token"]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] 操作票据签发失败（取消将被网关拒绝）: {exc}")
+    return h
 
 
 def q1(sql: str, args=()) -> dict | None:
@@ -163,7 +174,7 @@ def test_contract_and_lazy() -> None:
     sub_id = q1("SELECT id FROM subscriptions WHERE user_id=%s AND merchant=%s",
                 (USER_A, TEST_MERCHANT))["id"]
     force_next_due(TEST_MERCHANT, USER_A, date.today() - timedelta(days=1))
-    rc = client.post(f"/api/subscriptions/{sub_id}/cancel", headers=hdr(USER_A))
+    rc = client.post(f"/api/subscriptions/{sub_id}/cancel", headers=cancel_hdr(USER_A))
     check("cancel 返回 ok", rc.json().get("ok"), str(rc.json()))
     cnt_before = txn_count(TEST_MERCHANT, USER_A)
     client.get("/api/subscriptions", headers=hdr(USER_A))
@@ -225,7 +236,7 @@ def test_regression() -> None:
     # 越权：用户B 碰用户A 的订阅 → 403
     sub_a = q1("SELECT id FROM subscriptions WHERE user_id=%s LIMIT 1", (USER_A,))
     if sub_a:
-        r = client.post(f"/api/subscriptions/{sub_a['id']}/cancel", headers=hdr(USER_B))
+        r = client.post(f"/api/subscriptions/{sub_a['id']}/cancel", headers=cancel_hdr(USER_B))
         check("水平越权被拦截（B 不能取消 A 的订阅）", r.status_code == 403,
               f"status={r.status_code}")
 

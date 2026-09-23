@@ -26,6 +26,7 @@ import pymysql
 import config
 import profile_db
 import requests
+from utils import op_auth  # P0.2：直连 8003 写端点需携带一次性操作票据（真实 ticket 路径）
 
 from utils import card_validator, settlement_engine
 
@@ -120,8 +121,14 @@ def hdr(uid: int) -> dict:
 
 
 def transfer(uid: int, payee_id: int, amount: float) -> dict:
+    h = hdr(uid)
+    # P0.2：直连 8003 /api/transfer 必须携带一次性操作票据（场景=transfer），走真实 ticket 路径
+    try:
+        h["X-Op-Token"] = op_auth.issue_op_token(uid, "transfer")["token"]
+    except Exception as exc:
+        print(f"[warn] 操作票据签发失败（转账将被网关拒绝）: {exc}")
     r = requests.post(MOCK + "/api/transfer", json={"payee_id": payee_id, "amount": amount},
-                      headers=hdr(uid), timeout=10)
+                      headers=h, timeout=10)
     try:
         return r.status_code, r.json()
     except Exception:
@@ -346,6 +353,11 @@ def main() -> int:
     # ===================================================================== #
     print("\n[验收6] 对话可查清算状态")
     from agent.tools import execute_tool
+    from utils.security import set_current_user_id, set_current_auth_token
+    # ★ 工具经 auth_headers() 读"当前请求上下文"里的登录态转发给 8003。
+    #   独立脚本没有请求中间件，须显式注入；否则 BANK_ALLOW_ANON=0 下 8003 以 401 拒绝。
+    set_current_user_id(A)
+    set_current_auth_token(token(A))
     tool_payload = execute_tool("get_transactions", {"start": "2026-01-01", "end": "2026-12-31"})
     txs = tool_payload.get("transactions") or []
     has_field = any("settle_status" in t for t in txs)

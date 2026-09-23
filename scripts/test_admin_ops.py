@@ -86,6 +86,7 @@ check("响应提示知识文档需同步", d.get("affects_knowledge") is True an
 
 # 用户端阈值即时生效（新进程读 DB → get_rule）
 sys.path.insert(0, ".")
+from utils import op_auth  # noqa: E402  # P0.2：写端点需一次性操作票据（真实 ticket 路径）
 import rules  # noqa: E402
 rules.load_rules()
 check("get_rule 即时读到 8000（跨进程 ≤5s TTL）", rules.get_rule(KEY) == 8000)
@@ -143,8 +144,13 @@ _c = _pm.connect(host=_env["DB_HOST"], port=int(_env["DB_PORT"]), user=_env["DB_
 with _c.cursor() as _cur:
     _cur.execute("UPDATE users SET phone=%s WHERE id=%s", ("13800009999", probe_uid_for_buy))
 _c.close()
+try:
+    _op_buy = op_auth.issue_op_token(probe_uid_for_buy, "buy_product")["token"]
+except Exception as _exc:  # noqa: BLE001
+    print("[warn] 操作票据签发失败（买入将被网关拒绝）:", _exc)
+    _op_buy = ""
 r = requests.post(BASE + "/api/products/buy",
-                  headers={"Authorization": "Bearer " + probe_tok},
+                  headers={"Authorization": "Bearer " + probe_tok, "X-Op-Token": _op_buy},
                   json={"product_id": target["id"], "amount": float(target["min_amount"])})
 _buy_resp = (r.json().get("error") or r.json().get("message") or "")
 check("下架产品购买被拒", r.json().get("ok") is False and "下架" in _buy_resp, _buy_resp[:50])

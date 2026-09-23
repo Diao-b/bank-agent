@@ -1551,13 +1551,26 @@ def execute(state: WriteState) -> dict:
     idem_key = params.get("_idem_key") or uuid.uuid4().hex
     params["_idem_key"] = idem_key
 
+    # P0.2：本操作已走完 verify/paypass/confirm 全链路 → 签发一次性操作票据，
+    #       随请求透传 X-Op-Token，8003 写端点据此放行（防直连绕过写流程）。
+    #       ★ 安全失败：签发失败则 op_token=None，8003 必以 401 拒绝（绝不静默放行）。
+    op_token = None
+    try:
+        from utils import op_auth
+        _uid = get_current_user_id() or config.DEFAULT_USER_ID
+        op_token = op_auth.issue_op_token(_uid, action).get("token")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] 操作票据签发失败（写端点将拒绝执行）: {exc}")
+
     # 操作者身份由认证头携带 —— build_body 不再接收 uid、也不再输出 user_id 字段
     body = spec["build_body"](params)
     path = spec["path"]
     if "{sub_id}" in path:
         path = path.format(sub_id=params["sub_id"])
-    r = _http(spec["method"], path, json_body=body,
-              extra_headers={"Idempotency-Key": idem_key})
+    _extra = {"Idempotency-Key": idem_key}
+    if op_token:
+        _extra["X-Op-Token"] = op_token
+    r = _http(spec["method"], path, json_body=body, extra_headers=_extra)
     if r.get("ok"):
         _emit_node("execute", "done", r.get("message") or "执行成功")
         # C3 顺手扩展：执行成功 → 写 transfer_receipt 通知（收件箱真实送达）。

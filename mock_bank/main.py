@@ -45,6 +45,7 @@ from utils import inbox
 from utils.response_codes import ERR
 from utils import settlement_engine, card_validator, card_service
 from utils.deps import current_uid
+from utils.op_auth import RequireOpToken
 from utils.transfer import execute_transfer, resolve_payee, lookup_local_card
 from utils.security import NotFoundError, OwnershipError
 from . import db
@@ -981,7 +982,8 @@ class TransferReq(BaseModel):
 
 
 @app.post("/api/transfer")
-def transfer(req: TransferReq, request: Request, uid: int = Depends(current_uid)):
+def transfer(req: TransferReq, request: Request, uid: int = Depends(current_uid),
+             _: None = Depends(RequireOpToken("transfer"))):
     """转账执行（薄壳）—— 业务逻辑见 utils/transfer.execute_transfer。
 
     站内轨实时到账（扣款+入账+双流水+双回执+双方留痕，同事务）；
@@ -1174,7 +1176,8 @@ class InternalTransferReq(BaseModel):
 
 
 @app.post("/api/accounts/transfer-internal")
-def transfer_internal(req: InternalTransferReq, uid: int = Depends(current_uid)):
+def transfer_internal(req: InternalTransferReq, uid: int = Depends(current_uid),
+                     _: None = Depends(RequireOpToken("internal_transfer"))):
     """本人账户间资金归集（内部划转）：把某张卡的钱归到主账户，让新卡的钱能用。
 
     ★ 为什么需要它：单主账户体系下，转账付款扣的是「主账户」（accounts 里 id

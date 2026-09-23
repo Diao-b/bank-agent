@@ -541,6 +541,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 from mock_bank import db  # noqa: E402
 from utils import settlement_engine  # noqa: E402
 from utils.deps import current_uid  # noqa: E402
+from utils.op_auth import RequireOpToken  # noqa: E402
 
 router = APIRouter()
 
@@ -843,7 +844,8 @@ class CardIdReq(BaseModel):
 
 
 @router.post("/api/cards/freeze")
-def freeze_card(req: CardIdReq, uid: int = Depends(current_uid)):
+def freeze_card(req: CardIdReq, uid: int = Depends(current_uid),
+               _: None = Depends(RequireOpToken("freeze_card"))):
     """冻结银行卡：归属校验（非本人 403）→ status=frozen → 留痕。"""
     from mock_bank.main import owned, fail  # noqa: PLC0415 惰性引用共享 helper（避免与 main 循环导入）
     with db.get_conn() as conn:
@@ -877,7 +879,8 @@ def freeze_card(req: CardIdReq, uid: int = Depends(current_uid)):
 
 
 @router.post("/api/cards/unfreeze")
-def unfreeze_card(req: CardIdReq, uid: int = Depends(current_uid)):
+def unfreeze_card(req: CardIdReq, uid: int = Depends(current_uid),
+                 _: None = Depends(RequireOpToken("unfreeze_card"))):
     """解冻银行卡：归属校验（非本人 403）→ status=normal → 留痕。"""
     from mock_bank.main import owned, fail  # noqa: PLC0415 惰性引用共享 helper（避免与 main 循环导入）
     with db.get_conn() as conn:

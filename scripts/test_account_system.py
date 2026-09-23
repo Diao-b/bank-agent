@@ -22,14 +22,22 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+import profile_db
 from utils import card_validator
+from scripts._op_test_auth import op_header
 
 BASE = config.BANK_API_BASE.rstrip("/")
 LIGE_CARD = "6102262016810343"   # 李哥主账户卡号（seed 生成）
+UID = config.DEFAULT_USER_ID     # 本脚本以演示主账号为操作者（P0.1 后不再匿名回落）
 
 
-def call(method, path, json_body=None):
-    r = requests.request(method, BASE + path, json=json_body, timeout=10)
+def call(method, path, json_body=None, uid=None):
+    # P0.1：BANK_ALLOW_ANON=0 后不再匿名回落 DEFAULT_USER_ID，须显式带真实登录态；
+    # P0.2：写端点另需一次性操作票据（走真实 ticket 路径）。
+    who = UID if uid is None else uid
+    h = {"Authorization": f"Bearer {profile_db.issue_token(who)}"}
+    h.update(op_header(who, path))
+    r = requests.request(method, BASE + path, json=json_body, headers=h, timeout=10)
     try:
         return r.status_code, r.json()
     except ValueError:

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from mock_bank import db
 from utils.deps import current_uid
+from utils.op_auth import RequireOpToken
 from utils.response_codes import ERR
 
 router = APIRouter()
@@ -152,7 +153,8 @@ class WealthBuyReq(BaseModel):
 
 
 @router.post("/api/products/buy")
-def buy_product(req: WealthBuyReq, uid: int = Depends(current_uid)):
+def buy_product(req: WealthBuyReq, uid: int = Depends(current_uid),
+               _: None = Depends(RequireOpToken("buy_product"))):
     """购买理财：校验产品存在、金额满足起投且余额充足，同事务内扣减余额 +
     写入 holdings 持仓并落操作日志。
 
@@ -286,7 +288,8 @@ class RedeemReq(BaseModel):
 
 
 @router.post("/api/redeem")
-def redeem(req: RedeemReq, uid: int = Depends(current_uid)):
+def redeem(req: RedeemReq, uid: int = Depends(current_uid),
+           _: None = Depends(RequireOpToken("redeem"))):
     """赎回持仓：归属校验 → 金额校验 → 减持仓 / 置已赎回 → 留痕。"""
     from mock_bank.main import to_decimal, fail  # noqa: PLC0415 惰性引用共享 helper（避免与 main 循环导入）
     try:

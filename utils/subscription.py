@@ -27,6 +27,7 @@ from mock_bank.main import (
     current_uid,
     add_months,
 )
+from utils.op_auth import RequireOpToken
 
 # 业务常量单源见 rules.py（组 W）：订阅识别阈值 + 计费周期枚举
 # （不再从 mock_bank.main 取 VALID_CYCLES，解除 main↔subscription 的常量耦合）。
@@ -640,7 +641,8 @@ def delete_subscription(sub_id: int, uid: int = Depends(current_uid)):
 
 
 @router.post("/api/subscriptions/{sub_id}/cancel")
-def cancel_subscription(sub_id: int, uid: int = Depends(current_uid)):
+def cancel_subscription(sub_id: int, uid: int = Depends(current_uid),
+                       _: None = Depends(RequireOpToken("cancel_subscription"))):
     """取消订阅：软删除（status 置 cancelled），记录保留供前端展示删除线，落操作日志。"""
     with db.get_conn() as conn:
         try:

@@ -34,6 +34,7 @@ import pymysql
 import config
 import profile_db
 import requests
+from utils import op_auth  # P0.2：直连 8003 写端点需携带一次性操作票据（真实 ticket 路径）
 
 MOCK = "http://127.0.0.1:%d" % config.BANK_API_PORT
 
@@ -54,6 +55,11 @@ def token(uid: int) -> str:
 
 def buy(uid: int, product_id: int, amount: float) -> tuple[int, dict]:
     h = {"Authorization": f"Bearer {token(uid)}"}
+    # P0.2：直连 8003 /api/products/buy 必须携带一次性操作票据（场景=buy_product）
+    try:
+        h["X-Op-Token"] = op_auth.issue_op_token(uid, "buy_product")["token"]
+    except Exception as exc:
+        print(f"[warn] 操作票据签发失败（买入将被网关拒绝）: {exc}")
     try:
         r = requests.post(MOCK + "/api/products/buy",
                           json={"product_id": product_id, "amount": amount},

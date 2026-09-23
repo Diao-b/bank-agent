@@ -37,6 +37,7 @@ import pymysql
 import config
 import profile_db
 import requests
+from utils import op_auth  # P0.2：直连 8003 写端点需携带一次性操作票据（真实 ticket 路径）
 
 MOCK = "http://127.0.0.1:%d" % config.BANK_API_PORT
 
@@ -57,6 +58,11 @@ def token(uid: int) -> str:
 
 def transfer(uid: int, payee_id: int, amount: float) -> tuple[int, dict]:
     h = {"Authorization": f"Bearer {token(uid)}"}
+    # P0.2：直连 8003 /api/transfer 必须携带一次性操作票据（场景=transfer），走真实 ticket 路径
+    try:
+        h["X-Op-Token"] = op_auth.issue_op_token(uid, "transfer")["token"]
+    except Exception as exc:
+        print(f"[warn] 操作票据签发失败（转账将被网关拒绝）: {exc}")
     try:
         r = requests.post(MOCK + "/api/transfer",
                           json={"payee_id": payee_id, "amount": amount},

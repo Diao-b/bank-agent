@@ -30,6 +30,7 @@ import pymysql
 import config
 import profile_db
 import requests
+from scripts._op_test_auth import op_header  # P0.2：写端点需一次性操作票据（真实 ticket 路径）
 
 MOCK = "http://127.0.0.1:%d" % config.BANK_API_PORT
 UID = 1
@@ -57,7 +58,8 @@ def H(uid: int = UID) -> dict:
 
 def call(method: str, path: str, uid: int = UID, body=None):
     try:
-        r = requests.request(method, MOCK + path, json=body, headers=H(uid), timeout=25)
+        headers = {**H(uid), **op_header(uid, path)}   # P0.2：写端点携带一次性操作票据
+        r = requests.request(method, MOCK + path, json=body, headers=headers, timeout=25)
         try:
             return r.status_code, r.json()
         except Exception:

@@ -43,6 +43,7 @@ UPGRADE_ORDER = (
     "upgrade_transfer_limit.sql",
     "upgrade_idempotency.sql",
     "upgrade_delete_cascade.sql",
+    "upgrade_op_auth.sql",
 )
 
 
