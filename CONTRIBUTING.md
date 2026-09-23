@@ -42,6 +42,14 @@
 > - `python init_db.py --status` / `python scripts/check_migrations.py`：查看台账 / 只读体检（漂移·缺失·未登记·未应用）。
 > - ★ 迁移一经登记即视为“已应用”；**改了内容不会自动重跑**（告警「迁移变更·跳过」），需先删台账该行或重跑 `--baseline`。
 
+> ★ **幂等键生命周期（P1.5）**：写流程的 `Idempotency-Key` 在 `risk_check`（`execute` 之前最后一个
+> **不中断**节点）**固定并随 checkpoint 持久化**，`execute` 只复用（无则兜底 `uuid4`）；
+> `fill_params` 在新一笔操作进入解析时清掉上一笔遗留的键。
+> 目的：`execute` 若在「8003 已提交、但状态尚未回写」的窗口内被重放（进程被杀 / 异常 / SSE 断连），
+> 仍复用同一 key → 后端依 `idempotency_records` 回放，**绝不重复扣款**。
+> 「同 key 不同 body」→ 后端 `409 IDEMPOTENT_KEY_REUSED`；业务失败删占位，允许修正后重试。
+> 验收：`scripts/test_idem_preposed.py`（9/9）。
+
 > **新功能自查（示例：水电费代缴）**：① 放哪文件 —— 新域 `utils/billpay.py`（若由转账扣款则**必须**走 `resolve_payee`）；② 进哪清单 —— §三 域清单 + `README` §5 端点 + `sql/upgrade_billpay.sql`（有新表时）；③ 走哪入口 —— 写操作加 `write_flow.ACTION_SPECS`「billpay」+ 节点；④ 同步什么 —— §五（阈值进 `rules.py`、`docs/knowledge` 数字、验收清单）。
 
 ## 三、域清单表（户口本 · 新功能先对号入座）

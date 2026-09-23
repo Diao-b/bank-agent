@@ -1095,6 +1095,13 @@ def fill_params(state: WriteState) -> dict:
 
     params: dict = dict(state.get("params") or {})
 
+    # ★ P1.5 幂等键前置（配套）：新一笔操作进入解析阶段 → **丢弃上一笔遗留的幂等键**。
+    #   键在 risk_check（execute 之前最后一个「不中断」节点）重新固定并随 checkpoint 持久化；
+    #   这里清旧值，避免「同 thread 复用 state」时把上一笔的键带到新一笔
+    #   （否则新请求 = 同 key 不同 body → 被 8003 判 409 KEY_REUSED）。
+    #   ★ 中途重放（resume）不经过本节点，故不会误清当前操作的键。
+    params.pop("_idem_key", None)
+
     # ★ 逃生舱配套（审计：澄清挂起不劫持新请求）：driver 判定"新请求"时会以
     #   resume("取消") 解除本类澄清挂起；用户主动说"取消"也走同一条出口。
     #   统一在此优雅退出 —— 未做任何变更，不进入解析/执行。
@@ -1404,6 +1411,11 @@ def risk_check(state: WriteState) -> dict:
     if "pay_password" in queue:
         params2["_password_set"] = paypass.has_password(uid)
     params2["_confirm_card"] = _gen_confirm_card(action, params2)
+    # ★ P1.5 幂等键前置：在 execute 之前的**最后一个不中断节点**固定本次操作的幂等键，
+    #   随 checkpoint 一起持久化。这样即使 execute 在「8003 已提交但状态尚未回写」之后被重放
+    #   （进程被杀 / 异常 / SSE 中断重连），也会复用同一 key → 8003 依幂等记录回放，绝不重复扣款。
+    #   （原先只在 execute 内生成、且直到 HTTP 返回后才随 state 回写 —— 崩溃窗口内会换新 key。）
+    params2.setdefault("_idem_key", uuid.uuid4().hex)
     return {"params": params2}
 
 
