@@ -197,8 +197,9 @@ bank-agent/
 ├── .env.example              # DEEPSEEK_API_KEY / DB_HOST / DB_USER / DB_PASSWORD / DB_NAME
 ├── .env                      # 真实配置（已 gitignore，需自己补全）
 ├── config.py                 # 统一读环境变量（含 db_config() / require_llm_key() / WRITE_TEST_DB）
-├── init_db.py                # 执行 sql/init.sql + 按依赖顺序应用 upgrade_*.sql
+├── init_db.py                # init.sql（含 DROP，全新库）+ 版本化应用 upgrade_*.sql（台账 --baseline/--upgrade-only/--status）
 ├── sql/init.sql              # 建表 + 种子数据（含三个自检 SELECT）
+├── sql/schema_migrations.sql # 迁移版本台账（P1.1，由 init_db.py 自动建）
 ├── mock_bank/
 │   ├── main.py               # FastAPI：工具经 HTTP 调用（M2 已补全全部写端点）
 │   └── db.py                 # pymysql 封装，强制 DictCursor

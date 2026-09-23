@@ -21,7 +21,7 @@
 | **新业务规则** | 数值进 `rules.py`；执行逻辑进对应域文件（转账 → `utils/transfer.py`） | 阈值/额度硬编码进路由或 agent |
 | **新业务拒绝分支** | 失败统一走 `fail(message, code=ERR.XXX, action="<动作名>")`；错误码先到 `utils/response_codes.py` 的 `ERR` 加常量（值 == 常量名），`action` 由响应包裹层按路由兜底注入 | 只返回中文文案不带 `code`；在调用点写裸字符串 code（散落即不一致） |
 | **新写端点** | 只写业务；统一响应协议（action/code/message）与**幂等去重**由 `ResponseEnvelopeMiddleware` 在包裹层自动生效，无需在端点里重复实现 | 在端点内部自己拼装协议字段 / 自己做去重（会与包裹层打架） |
-| **新数据表** | 写 `sql/upgrade_<feature>.sql`（幂等），由 `init_db.py` 自动 glob 应用；**外键优先内联在 `CREATE TABLE` 里** | 改 `sql/init.sql` 既有表结构；手改运行库；在多个迁移文件之间传递 MySQL 用户变量 |
+| **新数据表** | 写 `sql/upgrade_<feature>.sql`（幂等），**并登记进 `init_db.UPGRADE_ORDER`**；`init_db.py` 按版本台账 `schema_migrations` 只应用未应用的迁移；**外键优先内联在 `CREATE TABLE` 里** | 改 `sql/init.sql` 既有表结构；手改运行库；在多个迁移文件之间传递 MySQL 用户变量 |
 | **新 Agent 意图** | 写操作加 `agent/write_flow.ACTION_SPECS` 条目 + 节点/路由；查询扩 `agent/tools.py` 本地工具 | 绕过 `write_flow` 直接调写端点 |
 | **新外部服务** | 传输层放 `utils/<svc>_client.py`、转换层放 `utils/<svc>_bridge.py`（照 `mcp_client` + `mcp_bridge`） | 把外部调用内联进路由或域文件 |
 | **UI 改动** | 复用 `web/index.html` 既有组件（`Amount` / `PasswordCard` / `VerifyPanel` / `ConfirmCard` / `PrivacyProvider`…）；状态用文字字符；**图标一律内联 SVG 自绘**（如语音按钮 `MicGlyph`） | 引入 icon 库 / emoji / 外部图标字体；改完不跑 `node scripts/_check_babel.js` |
@@ -33,6 +33,14 @@
 > `upgrade_delete_cascade.sql` 永远放在最后。
 > 新增表仍优先把 `CONSTRAINT ... FOREIGN KEY` 内联进 `CREATE TABLE ... IF NOT EXISTS`，
 > 这样不强依赖多语句会话状态，迁移更直观。
+>
+> ★ **P1.1 迁移版本化**：`init_db.py` 维护台账 `schema_migrations`（文件名 + sha256 + 语句/跳过数 + 时间）。
+> - `python init_db.py`：**含 `DROP TABLE` 重建**（跑 `init.sql`），**仅限全新库**；随后按序应用全部迁移并登记。
+> - `python init_db.py --baseline`：把现有迁移登记为“已应用”（**只登记、不执行 SQL**）——**存量库纳入版本管理的唯一正确入口**。
+> - `python init_db.py --upgrade-only`：只应用**未应用**的迁移；若台账为空且库内已有数据会**拒绝执行**
+>   （因部分迁移并非数据幂等，如 `upgrade_products_fix.sql` 直接 `DELETE FROM products` 后重插）。
+> - `python init_db.py --status` / `python scripts/check_migrations.py`：查看台账 / 只读体检（漂移·缺失·未登记·未应用）。
+> - ★ 迁移一经登记即视为“已应用”；**改了内容不会自动重跑**（告警「迁移变更·跳过」），需先删台账该行或重跑 `--baseline`。
 
 > **新功能自查（示例：水电费代缴）**：① 放哪文件 —— 新域 `utils/billpay.py`（若由转账扣款则**必须**走 `resolve_payee`）；② 进哪清单 —— §三 域清单 + `README` §5 端点 + `sql/upgrade_billpay.sql`（有新表时）；③ 走哪入口 —— 写操作加 `write_flow.ACTION_SPECS`「billpay」+ 节点；④ 同步什么 —— §五（阈值进 `rules.py`、`docs/knowledge` 数字、验收清单）。
 
