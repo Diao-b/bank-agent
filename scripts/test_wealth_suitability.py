@@ -53,6 +53,40 @@ def token(uid: int) -> str:
     return profile_db.issue_token(uid)
 
 
+def redeem(uid: int, holding_id: int, amount: float) -> tuple[int, dict]:
+    """赎回（收尾还原用）。与 buy 对仗：P0.2 一次性票据场景 = redeem。"""
+    h = {"Authorization": f"Bearer {token(uid)}"}
+    try:
+        h["X-Op-Token"] = op_auth.issue_op_token(uid, "redeem")["token"]
+    except Exception as exc:
+        print(f"[warn] 操作票据签发失败（赎回将被网关拒绝）: {exc}")
+    try:
+        r = requests.post(MOCK + "/api/redeem",
+                          json={"holding_id": holding_id, "amount": amount},
+                          headers=h, timeout=15)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, {"raw": r.text}
+    except Exception as exc:
+        return -1, {"error": f"请求异常：{exc}"}
+
+
+def balance(uid: int) -> float:
+    with db() as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT COALESCE(SUM(balance),0) AS b FROM accounts WHERE user_id=%s", (uid,))
+            return float((cur.fetchone() or {})["b"])
+
+
+def holding_ids(uid: int) -> dict[int, float]:
+    """{holding_id: amount}，只看 status='holding'（用于"本次新增了多少笔"）。"""
+    with db() as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT id, amount FROM holdings WHERE user_id=%s AND status='holding'", (uid,))
+            return {int(r["id"]): float(r["amount"]) for r in cur.fetchall()}
+
+
 def buy(uid: int, product_id: int, amount: float) -> tuple[int, dict]:
     h = {"Authorization": f"Bearer {token(uid)}"}
     # P0.2：直连 8003 /api/products/buy 必须携带一次性操作票据（场景=buy_product）
@@ -195,9 +229,12 @@ def main() -> int:
               f"--host 127.0.0.1 --port {config.BANK_API_PORT}")
         return 2
 
-    # 备份原风险偏好，结束后恢复
+    # 备份原风险偏好 + 记录余额/持仓基线（收尾要还原，保证可重复执行）
     saved = _get_risk(SENDER)
-    print(f"\nSENDER 原风险偏好：{saved!r}")
+    bal_before = balance(SENDER)
+    holdings_before = holding_ids(SENDER)
+    print(f"\nSENDER 原风险偏好：{saved!r}；基线余额 {bal_before:.2f}，"
+          f"存量持仓 {len(holdings_before)} 笔")
 
     scenario_normal("稳健→R1")
     scenario_boundary()
@@ -205,7 +242,25 @@ def main() -> int:
     scenario_concurrency_na()
     scenario_bypass_api()
 
-    # 收尾：恢复原风险偏好（真实持仓/余额改动属预期副作用）
+    # 收尾：① 把本次新买的持仓全部赎回（本金回账户）② 恢复原风险偏好
+    #   ★ 幂等（P2.2）：原先只恢复风险偏好、买入的持仓留在库里 —— 多跑几次就把 SENDER
+    #     的可用余额抽干（实测累积 40 笔 ¥15,700，把「微众卡（主账户）」打到 ¥298，
+    #     连累 test_insite_transfer 全红）。现在收尾赎回并以"余额复原"作为断言。
+    holdings_after = holding_ids(SENDER)
+    new_hids = sorted(set(holdings_after) - set(holdings_before))
+    _redeemed = 0
+    for _hid in new_hids:
+        sc, sj = redeem(SENDER, _hid, holdings_after[_hid])
+        if sc == 200 and sj.get("ok"):
+            _redeemed += 1
+        else:
+            print(f"  [cleanup] 赎回 holding#{_hid} 失败: sc={sc} {json.dumps(sj, ensure_ascii=False)[:120]}")
+    bal_after = balance(SENDER)
+    print(f"\n[cleanup] 新增持仓 {len(new_hids)} 笔 → 已赎回 {_redeemed} 笔；"
+          f"余额 {bal_before:.2f} → {bal_after:.2f}")
+    record("收尾后余额复原（净副作用 0）", abs(bal_after - bal_before) < 0.01,
+           f"{bal_before:.2f} → {bal_after:.2f}")
+
     _set_risk(SENDER, saved)
     print(f"\n已恢复 SENDER 风险偏好为 {saved!r}")
 

@@ -25,6 +25,7 @@
 | **新 Agent 意图** | 写操作加 `agent/write_flow.ACTION_SPECS` 条目 + 节点/路由；查询扩 `agent/tools.py` 本地工具 | 绕过 `write_flow` 直接调写端点 |
 | **新外部服务** | 传输层放 `utils/<svc>_client.py`、转换层放 `utils/<svc>_bridge.py`（照 `mcp_client` + `mcp_bridge`） | 把外部调用内联进路由或域文件 |
 | **UI 改动** | 复用 `web/index.html` 既有组件（`Amount` / `PasswordCard` / `VerifyPanel` / `ConfirmCard` / `PrivacyProvider`…）；状态用文字字符；**图标一律内联 SVG 自绘**（如语音按钮 `MicGlyph`） | 引入 icon 库 / emoji / 外部图标字体；改完不跑 `node scripts/_check_babel.js` |
+| **新增/修改验收脚本** | 脚本必须**可重复执行且净副作用为 0**：注册的账号要回收（`profile_db.delete_user_cascade`）、买入的持仓要赎回、断言用**相对基线**（"本次运行没有新增…"）而不是绝对历史量 | 每次跑都新建用户/留下未赎回持仓/按"历史上一条都不能有"断言（实测会把演示余额抽干、把 users 从 13 涨到 48）。清理工具：`scripts/cleanup_test_users.py`（默认 dry-run） |
 
 > ★★ **迁移脚本执行模型（`sql/upgrade_*.sql`）**：`init_db` 用 `split_statements` 拆语句后，
 > **一个迁移文件复用同一个 DB 连接**，因此 `SET @x=...; PREPARE ... FROM @x; EXECUTE ...`
