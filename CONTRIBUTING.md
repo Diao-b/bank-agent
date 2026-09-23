@@ -72,7 +72,7 @@
 |---|---|---|
 | 收款人解析 / 转账执行 | `resolve_payee` / `execute_transfer` | `utils/transfer.py` |
 | 业务常量（额度/阈值/上限） | `rules.py`（`TRANSFER_VERIFY_THRESHOLD` 等） | `rules.py` |
-| DB 连接 | `db.get_conn()` | `mock_bank/db.py` |
+| DB 连接 | `db.get_conn()`（**P1.3 进程内连接池**；域代码禁止自建裸 `pymysql.connect`） | `mock_bank/db.py` |
 | 写操作留痕 | `db.log_operation(...)` | `mock_bank/db.py` |
 | 验证码 | `issue_code` / `check_code` | `utils/verify_codes.py` |
 | 支付密码核验 | `verify` / `has_passed` | `utils/paypass.py` |

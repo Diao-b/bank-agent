@@ -469,9 +469,9 @@ def health():
     """
     try:
         db.fetch_one("SELECT 1 AS ok")
-        return {"ok": True, "db": "up"}
+        return {"ok": True, "db": "up", "pool": db.pool_stats()}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "db": "down", "error": str(exc)}
+        return {"ok": False, "db": "down", "error": str(exc), "pool": db.pool_stats()}
 
 
 # =========================================================================== #

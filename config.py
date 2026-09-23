@@ -56,6 +56,13 @@ DB_PORT: int = int(_get("DB_PORT", "3306"))
 DB_USER: str = _get("DB_USER", "root")
 DB_PASSWORD: str = _get("DB_PASSWORD", "") or ""
 DB_NAME: str = _get("DB_NAME", "bank_agent")
+# P1.3 连接池：把「每请求新建/关闭连接」改为进程内复用（省 TCP + 认证握手）。
+#   池大小上限（稳态最多这么多连接）；借空且超时则开"溢出"连接，绝不因池满失败。
+DB_POOL_SIZE: int = int(_get("DB_POOL_SIZE", "16"))
+#   空闲超过该秒数的连接回收（防服务端超时空闲连接被误用）。
+DB_POOL_IDLE_SECONDS: int = int(_get("DB_POOL_IDLE_SECONDS", "300"))
+#   池满时等待可用连接的最长秒数；超时才开溢出连接。
+DB_POOL_WAIT_SECONDS: float = float(_get("DB_POOL_WAIT_SECONDS", "5"))
 
 # ---------------------------------------------------------------- Mock 银行服务
 BANK_API_HOST: str = _get("BANK_API_HOST", "127.0.0.1")
