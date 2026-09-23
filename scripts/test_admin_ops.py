@@ -13,10 +13,14 @@
   8) admin_logs：每次写操作均有留痕（who/what/old→new/when）。
 """
 import json
+import os
 import sys
 import time
 
 import requests
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import profile_db  # noqa: E402
 
 BASE = "http://127.0.0.1:8178"
 ADMIN = {"username": "admin", "password": "admin123"}
@@ -241,6 +245,16 @@ kinds = {l["action"] for l in logs}
 need = {"config_update", "product_update", "user_lock", "user_unlock",
         "user_reset_paypass", "notice_send", "knowledge_sync_confirm"}
 check("admin_logs 覆盖全部写操作类型", need.issubset(kinds), sorted(need - kinds))
+
+# ---------------------------------------------------------------- 9) 收尾：回收本次注册的临时账号
+# ★ 测试治理（P2.2）：这两个账号每次运行都新建，不收尾会让 users 表逐次膨胀
+#   （历史上累积了 30+ 个测试账号）。删除走 delete_user_cascade（唯一合法入口，带外键级联）。
+for _uid, _name in ((uid_probe, "c6_probe_" + _stamp), (luid, "c6_lock_" + stamp[-6:])):
+    try:
+        profile_db.delete_user_cascade(int(_uid))
+        print(f"  [cleanup] 已回收临时账号 {_name}(#{_uid})")
+    except Exception as _exc:  # noqa: BLE001
+        print(f"  [cleanup] 回收 {_name}(#{_uid}) 失败（不影响验收结论）: {_exc}")
 
 print()
 print(f"===== 结果：PASS {len(PASS)} / FAIL {len(FAIL)} =====")

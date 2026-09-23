@@ -68,7 +68,15 @@ ok("已认证用户二次 confirm 被拦截（即使验证码正确）",
    cr2.status_code == 200 and not cr2.json().get("ok") and "柜台" in (cr2.json().get("error") or ""),
    f"status={cr2.status_code} {cr2.json().get('error','')[:60]}")
 
-# 3) 汇总
+# 3) 收尾：回收本次注册的临时账号
+# ★ 测试治理（P2.2）：原先每次运行都新建一个 rn_t_* 且不回收 → users 表逐次膨胀。
+try:
+    profile_db.delete_user_cascade(int(uid))
+    print(f"  [cleanup] 已回收临时账号 {uname}(#{uid})")
+except Exception as exc:  # noqa: BLE001
+    print(f"  [cleanup] 回收临时账号 {uname}(#{uid}) 失败（不影响验收结论）: {exc}")
+
+# 4) 汇总
 print("\n" + "="*60)
 p = sum(1 for _,c,_ in RES if c); t = len(RES)
 print(f" 结果：{p}/{t} 通过")
