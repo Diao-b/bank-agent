@@ -17,6 +17,10 @@ read_test.db
 read_test.db*
 write_test*.db
 
+# ===== 回归跑批的**生成**产物（P2.2：不该被追踪）=====
+#   ★ 只忽略跑批输出目录；captures/*_readonly.json 是黄金基线，仍要入库。
+tests/baseline/captures/baseline_tests/
+
 # ===== 工程临时目录（非源码）=====
 _reports/
 .shots/
