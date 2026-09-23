@@ -127,13 +127,22 @@ def main() -> int:
     print(f"\n删除 {ok}/{len(targets)}；users {total} → {left}；管理员仍 {admins} 个")
     with conn() as c:
         with c.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS n FROM payees WHERE card_no IS NOT NULL "
-                        "AND card_no<>'' AND NOT EXISTS "
-                        "(SELECT 1 FROM external_accounts e WHERE e.card_no=payees.card_no)")
+            # ★ 只看**外部**收款人（linked_user_id IS NULL）：站内收款人（如「李雷→李哥」）
+            #   本就不该出现在 external_accounts，算进来是误报。
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM payees p "
+                "WHERE p.linked_user_id IS NULL AND p.card_no IS NOT NULL AND p.card_no<>'' "
+                "AND NOT EXISTS (SELECT 1 FROM external_accounts e WHERE e.card_no=p.card_no)")
             dangling = int(cur.fetchone()["n"])
     if dangling:
-        print(f"[提示] 仍有 {dangling} 个收款人卡号未登记 external_accounts"
-              f"（跑 sql/upgrade_crossbank.sql 的 seed 补登记，否则跨行会退票）")
+        # ★ 刻意不自动补登记：既有「卡号重生成导致的真漂移」（该补），
+        #   也有**故意不登记**的验收用幽灵卡（补了会让 test_crossbank_settlement 直接失效）。
+        print(f"[提示] 有 {dangling} 个外部收款人卡号未登记 external_accounts —— "
+              f"**不要盲目跑 seed**，请先逐个确认：")
+        print("       SELECT id,user_id,nickname,card_no FROM payees "
+              "WHERE linked_user_id IS NULL AND card_no NOT IN "
+              "(SELECT card_no FROM external_accounts);")
+        print("       （真漂移 = 补登记；「幽灵卡号（验收测试）」等 = 故意留着，补了会破坏跨行验收）")
     return 0 if ok == len(targets) else 1
 
 

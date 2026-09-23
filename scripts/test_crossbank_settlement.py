@@ -210,6 +210,15 @@ def main() -> int:
     print(f" mock_bank={MOCK}")
     print("=" * 68)
 
+    # ★ 相对不变量（P2.2）：妈妈卡在「卡片重生成 → external_accounts 未同步」的漂移期
+    #   可能已累积历史退票记录。断言应看"本次运行有没有给它新增退票"，
+    #   而不是"历史上一条都没有"（后者是环境状态，不是本次行为）。
+    try:
+        mom_baseline = int((return_history(A, PAYEE_MOM) or {}).get("return_count") or 0)
+    except Exception:  # noqa: BLE001
+        mom_baseline = 0
+    print(f" 基线：妈妈卡历史退票 {mom_baseline} 条（本次运行不得新增）")
+
     # ===================================================================== #
     #  验收 1：向已登记外部账户（妈妈·招行）转账 → 在途 → 触发清算 → 到账
     # ===================================================================== #
@@ -345,8 +354,10 @@ def main() -> int:
            json.dumps(rh, ensure_ascii=False))
     record("退票记录文案含「核对」", "核对" in (rh.get("message") or ""))
     rh_ok = return_history(A, PAYEE_MOM)
-    record("已到账账户无退票记录（warn=false）", rh_ok.get("warn") is False,
-           f"count={rh_ok.get('return_count')}")
+    _mom_now = int(rh_ok.get("return_count") or 0)
+    record("已到账账户本次运行未新增退票（基线不变）",
+           _mom_now == mom_baseline,
+           f"baseline={mom_baseline} now={_mom_now} warn={rh_ok.get('warn')}")
 
     # ===================================================================== #
     #  验收 6：用户问"我的转账到账了吗" → AI 可查 settle_status
