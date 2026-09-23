@@ -48,11 +48,16 @@ def digital_human_status():
 def digital_human_interrupt():
     """让数字柜员立即停止播报（「与小微对话」模式里的「打断」）。
 
-    桥接层 stop() 本身静默失败：Fay 未启动 / 异常也不报错，前端照常继续对话。
+    ★ 与「新消息到达时打断上一句」的 `_dh_interrupt()` 区别：
+      这里额外置位 `_muted`（闭嘴）—— 打断后后端可能还在生成，
+      若不停住开口意图，done 帧到达时会「停下又念一遍」。
+      闭嘴由下一条用户消息到达时解除（run_server._dh_interrupt → unmute）。
+
+    delivered=false 表示 Fay 未启动 / 没送到 —— 前端据此提示，别静默当成成功。
     同样必须注册在 /api/{path:path} 兜底代理之前。
     """
-    digital_human.stop()
-    return JSONResponse({"ok": True})
+    delivered = digital_human.interrupt()
+    return JSONResponse({"ok": True, "delivered": bool(delivered)})
 
 
 # --------------------------------------------------------------------------- #

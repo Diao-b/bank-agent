@@ -2704,6 +2704,14 @@ function useSpeechInput(onText) {
   const recRef = useRef(null);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;                   // 始终用最新回调，避免闭包过期
+  /* 瞬时提示（自动消失）：自听被丢弃时用 —— 普通模式没有语音对话状态条，
+     静默丢弃会让人以为麦克风坏了，必须给一句看得见的解释。 */
+  const flashTimerRef = useRef(null);
+  const flash = (msg) => {
+    setNote(msg);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setNote(''), 2600);
+  };
 
   const supported = !!SpeechRec;
   const secure = typeof window === 'undefined' ? true : (window.isSecureContext !== false);
@@ -2772,7 +2780,7 @@ function useSpeechInput(onText) {
     if (rec) { try { rec.abort(); } catch (e) {} }
   }, []);
 
-  return { supported, secure, listening, interim, note, toggle, start, stop };
+  return { supported, secure, listening, interim, note, toggle, start, stop, flash };
 }
 
 /* 麦克风图标：**内联 SVG 自绘**（不引 icon 库、不用 emoji、不依赖外部图标字体）。
@@ -6406,6 +6414,10 @@ function App() {
        → 估算播报时长（期间关麦防自听）→ 自动回到聆听；随时可「打断」。
      ★ 识别器全页唯一，由这里持有并下传给 ChatInput（避免两个实例互抢）。
      ============================================================ */
+  /* ★ 打断后的「余音衰减期」（毫秒）：从"发出停止指令"到"扬声器真正静下来"
+     还有一截尾巴（Fay 已缓冲的音频 + 音箱余响）。这段时间内识别到的
+     几乎全是数字人自己的声音，一律丢弃，避免串进用户输入。 */
+  const VD_ECHO_GUARD_MS = 700;
   const [vdOn, setVdOn] = useState(() => localStorage.getItem('xb_voice_dialog') === '1');
   const [vdState, setVdState] = useState('idle');   // idle | listening | thinking | speaking
   const vdPhaseRef = useRef('idle');                // 权威阶段（用 ref 防 effect 重跑抖动）
@@ -6425,6 +6437,11 @@ function App() {
   const vdSpokeAtRef = useRef(0);       // 开始播报的时刻
   const vdListenAtRef = useRef(0);      // 本次麦克风重开时刻（自听过滤的时间基准）
   const vdSpeakMsRef = useRef(0);       // 后端算出的播报时长（毫秒，兜底用）
+  /* ★ 自听过滤的**绝对截止时刻**（两种模式统一；0 = 不过滤）。
+     语音对话模式由「重开麦」起算，普通模式没有该事件，只能由「本轮播报预计结束」起算。 */
+  const vdEchoUntilRef = useRef(0);
+  /* ★ 打断后的余音衰减截止时刻（见 VD_ECHO_GUARD_MS）：此窗口内识别结果一律丢弃。 */
+  const vdMuteUntilRef = useRef(0);
   const vdWsRef = useRef(null);         // 旁听 Fay 驱动 WS 的连接
   const vdAudioStartRef = useRef(0);    // 本轮第一帧音频到达时刻
   const vdAudioTotalRef = useRef(0);    // 本轮已到达音频帧的时长累计（毫秒）
@@ -6483,6 +6500,12 @@ function App() {
     const raw = String(text || '');
     if (!raw.trim()) return;
     vdSpokeRef.current = raw;
+    /* ★ 起算自听过滤窗口（仅当数字人真的在播报）：播报预计结束 + 3s 尾巴。
+       普通模式没有「重开麦」事件，只能在这里起算；
+       数字人关闭时不设窗口 —— 否则会把"和上一条回复相似的用户原话"误判成自听。 */
+    if (localStorage.getItem('xb_digital_human') === '1') {
+      vdEchoUntilRef.current = Date.now() + (vdSpeakMsRef.current || vdEstimateMs(raw)) + 3000;
+    }
     const s = raw.replace(/[\s\p{P}\p{S}]/gu, '');
     if (!s) return;
     vdSpokenPoolRef.current = [s, ...(vdSpokenPoolRef.current || [])].slice(0, 3);
@@ -6499,7 +6522,8 @@ function App() {
   const vdLooksLikeEcho = (text) => {
     const a = String(text || '').replace(/[\s\p{P}\p{S}]/gu, '');
     if (a.length < 6) return false;                                   // 太短不做判定（可能是真实简短指令）
-    if (Date.now() - vdListenAtRef.current > 25000) return false;      // 重开麦 25s 内才算自听
+    /* 时间窗用**绝对截止时刻**（两种模式统一）：超出就不再过滤，避免误伤用户原话。 */
+    if (!vdEchoUntilRef.current || Date.now() > vdEchoUntilRef.current) return false;
     const pool = (vdSpokenPoolRef.current || []).filter(Boolean);
     if (!pool.length) return false;
     for (const b of pool) {
@@ -6520,7 +6544,21 @@ function App() {
   /* 识别结果：普通模式只追加进输入框；对话模式累积回显 + 打时间戳供静音判定 */
   const speech = useSpeechInput((t) => {
     vdLastAtRef.current = Date.now();
-    if (!vdOn) { setInput((prev) => (prev || '') + t); return; }
+    /* ★ 打断后的余音衰减期：停止指令已发出，但音箱里剩下的还是它自己的声音。
+       这几百毫秒内识别到的内容一律丢弃（不进输入框、不发请求）。 */
+    if (Date.now() < vdMuteUntilRef.current) { setVdEcho((n) => n + 1); return; }
+    if (!vdOn) {
+      /* ★ 普通模式同样要防自听：数字人念回复时开麦，会把它的声音识别成"我说的话"
+         直接写进输入框（此前这里完全没过滤）。判定条件很严（长公共子串 + 时间窗），
+         不会误伤用户原话。丢弃时给一句瞬时提示，避免"说了没反应"的困惑。 */
+      if (vdLooksLikeEcho(t)) {
+        setVdEcho((n) => n + 1);
+        if (speechRef.current) speechRef.current.flash('已忽略一句（听上去像小微自己的声音）');
+        return;
+      }
+      setInput((prev) => (prev || '') + t);
+      return;
+    }
     if (vdPhaseRef.current !== 'listening') return;                    // 不在聆听阶段 → 一律忽略
     if (vdLooksLikeEcho(t)) {                                          // 自听 → 丢弃，绝不发送
       setVdEcho((n) => n + 1);
@@ -6541,6 +6579,7 @@ function App() {
     setVdEcho(0);
     setVdLeft(0);
     vdListenAtRef.current = Date.now();      // 自听过滤的时间基准：从"重开麦"算起
+    vdEchoUntilRef.current = Date.now() + 25000;   // 语音模式：重开麦后 25s 内仍可能听到余音
     setInput('');
     vdSetPhase('listening');
     if (speechRef.current) speechRef.current.start();
@@ -6560,11 +6599,22 @@ function App() {
     if (sendTextRef.current) sendTextRef.current(text);
   };
 
-  /* 打断：停播报 + 立刻回到聆听 */
+  /* 打断：停播报 + 立刻回到聆听。
+     ★ 打断要三件事一起做，缺一件就会"它还在念 / 把自己的声音录进去"：
+       ① 后端停 Fay 播报，并置位「闭嘴」（否则在途的 done 帧到了会停下又念一遍）
+       ② 前端开一道余音衰减期（见 VD_ECHO_GUARD_MS），期内识别结果一律丢弃
+       ③ 立刻回到聆听，让用户能马上说话 */
   const vdInterrupt = () => {
     vdClearSpeakTimer();
     vdSetPhase('idle');
-    fetch('/api/digital-human/interrupt', { method: 'POST', headers: authHeaders() }).catch(() => {});
+    vdMuteUntilRef.current = Date.now() + VD_ECHO_GUARD_MS;
+    fetch('/api/digital-human/interrupt', { method: 'POST', headers: authHeaders() })
+      .then((r) => r.json().catch(() => null))
+      .then((d) => {
+        // 没送到（Fay 未启动 / 丢包）→ 它还会在念，把丢弃窗口拉长，别把余音当人话
+        if (d && d.delivered === false) vdMuteUntilRef.current = Date.now() + 3000;
+      })
+      .catch(() => {});
     vdListen();
   };
 

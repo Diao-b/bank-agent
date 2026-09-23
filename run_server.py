@@ -371,9 +371,15 @@ def _dh_on(request: Request) -> bool:
 
 
 def _dh_interrupt() -> None:
-    """新消息到达时打断上一句播报；未激活 / Fay 未启动则静默 no-op。"""
+    """新消息到达：打断上一句播报，并**解除闭嘴**（新一轮允许开口）。
+
+    ★ 与 `/api/digital-human/interrupt` 的分工：
+      · 打断端点（用户主动）→ stop() + muted=True（闭嘴，防"停下又念一遍"）
+      · 这里（新一轮用户输入）→ stop() + muted=False（新回复照常念）
+    """
     if digital_human.enabled:
         digital_human.stop()
+        digital_human.unmute()
 
 
 def _persist_chat(thread_id: str, user_msg: str, reply: str, uid: int) -> None:

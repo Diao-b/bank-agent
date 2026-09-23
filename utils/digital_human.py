@@ -319,6 +319,10 @@ class DigitalHumanClient:
         self.list_items = int(getattr(config, "FAY_SPEAK_LIST_ITEMS", 1) or 0)
         # 总开关：未配置 FAY_API_URL → 全部 no-op（演示默认关）。
         self.enabled = bool(self.api_url)
+        # ★ 用户主动打断后的「闭嘴」标志：置位期间 speak() 一律跳过，
+        #   直到下一条用户消息到达（unmute）才恢复开口。
+        #   解决「打断时后端还在生成 → done 帧到达 → 又念一遍」：打断必须是真的闭嘴。
+        self._muted = False
 
     # ---- 公共 API（driver 层调用）----
     def is_ready(self) -> bool:
@@ -366,6 +370,10 @@ class DigitalHumanClient:
         """
         if not self.enabled or not text or not text.strip():
             return
+        # ★ 用户刚打断过 → 闭嘴，不再开口（直到下一条用户消息到达解除）。
+        #   否则会出现「点了打断，它停了一秒又把刚才那句念完」。
+        if self._muted:
+            return
         # ★ 朗读文本口语化（去 Markdown / 列表折叠为「前 N 项 + 等」/ 去 emoji）。
         #   聊天区展示的原文不受影响；FAY_SPEAK_DIGEST=0 可关闭（排查用）。
         spoken = self.spoken_text(text)
@@ -382,18 +390,34 @@ class DigitalHumanClient:
             # 静默：Fay 未启动 / 挂掉 / 接口不符，不影响主流程
             pass
 
-    def stop(self) -> None:
-        """打断当前播报：POST /to-stop-talking，JSON {"username": ...}。"""
+    def stop(self) -> bool:
+        """打断当前播报：POST /to-stop-talking，JSON {"username": ...}。
+
+        ★ 返回是否**送达**（不再静默吞异常）：打断是用户明确动作，
+          静默失败会让前端以为已停止、实际还在念 → 用户的话被自己的声音盖掉。
+        ★ 失败重试一次：Fay 偶发丢包，而"没停住"的代价很高（污染用户输入）。
+        """
         if not self.enabled:
-            return
-        try:
-            requests.post(
-                self.api_url + self.stop_path,
-                json={"username": self.username},
-                timeout=self.timeout,
-            )
-        except Exception:
-            pass
+            return False
+        url = self.api_url + self.stop_path
+        for _attempt in (1, 2):
+            try:
+                r = requests.post(url, json={"username": self.username}, timeout=self.timeout)
+                if r.status_code < 500:
+                    return True
+            except Exception:  # noqa: BLE001  单次失败交给重试，最终仍失败才放弃
+                pass
+        return False
+
+    def interrupt(self) -> bool:
+        """用户主动打断：立即停止播报 + 进入「闭嘴」状态（下一条用户消息解除）。"""
+        delivered = self.stop()
+        self._muted = True
+        return delivered
+
+    def unmute(self) -> None:
+        """新一轮用户消息到达 → 解除闭嘴，允许开口。"""
+        self._muted = False
 
     # ---- SSE / 回复触发（driver 层调用）----
     def maybe_speak_event(self, item, dh_on: bool) -> None:
