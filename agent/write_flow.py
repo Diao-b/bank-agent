@@ -1611,7 +1611,11 @@ def _notify_execution(action: str, params: dict, result: dict) -> None:
             extra += f"，扣款后余额 ¥{float(balance_after):,.2f}"
         inbox.push_transfer_receipt(uid, amount, f"{product}{extra}", serial, "理财申购")
     elif action == "redeem":
-        inbox.push_transfer_receipt(uid, amount, f"持仓 #{params.get('holding_id')}", serial, "赎回")
+        # 回执含"退回后余额"（与买入回执的"扣款后余额"对仗）
+        _bal = result.get("balance_after")
+        _extra = f"，退回后余额 ¥{float(_bal):,.2f}" if _bal is not None else ""
+        inbox.push_transfer_receipt(uid, amount, f"持仓 #{params.get('holding_id')}{_extra}",
+                                    serial, "赎回")
 
 
 # --------------------------------------------------------------------------- #

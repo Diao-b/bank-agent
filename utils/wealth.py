@@ -300,13 +300,14 @@ def redeem(req: RedeemReq, uid: int = Depends(current_uid),
         return fail("赎回金额必须大于 0", code=ERR.BAD_REQUEST, action="redeem")
 
     serial_no = "RD" + datetime.now().strftime("%Y%m%d%H%M%S") + f"{random.randint(1000, 9999)}"
+    balance_after: Decimal | None = None
     with db.get_conn() as conn:
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT h.id, h.amount, h.status, p.name AS product_name "
                     "FROM holdings h JOIN products p ON p.id = h.product_id "
-                    "WHERE h.id=%s AND h.user_id=%s",
+                    "WHERE h.id=%s AND h.user_id=%s FOR UPDATE",
                     (req.holding_id, uid),
                 )
                 holding = cur.fetchone()
@@ -340,9 +341,33 @@ def redeem(req: RedeemReq, uid: int = Depends(current_uid),
                         "UPDATE holdings SET amount = amount - %s WHERE id=%s",
                         (str(amount), req.holding_id),
                     )
+                # ★ P0.3 赎回资金闭环：本金退回用户可用账户。口径与买入/转账一致 ——
+                #   用户名下 id 最小的非信用账户，SELECT ... FOR UPDATE 行锁防并发。
+                #   修复前只减持仓不回款：赎回后资金凭空消失，前端「资金回到账户」承诺落空。
+                cur.execute(
+                    "SELECT id, balance FROM accounts WHERE user_id=%s "
+                    "AND COALESCE(account_type,'debit') <> 'credit' "
+                    "ORDER BY id ASC LIMIT 1 FOR UPDATE",
+                    (uid,),
+                )
+                _acc = cur.fetchone()
+                if not _acc:
+                    db.log_operation(
+                        uid, "redeem",
+                        {"holding_id": req.holding_id, "amount": float(amount)}, "failed", cur=cur,
+                    )
+                    conn.commit()
+                    return fail("赎回失败：未找到可入账的可用账户",
+                                code=ERR.REDEEM_FAILED, action="redeem")
+                balance_after = Decimal(str(_acc["balance"])) + amount
+                cur.execute(
+                    "UPDATE accounts SET balance = %s WHERE id=%s",
+                    (str(balance_after), _acc["id"]),
+                )
                 db.log_operation(
                     uid, "redeem",
-                    {"holding_id": req.holding_id, "amount": float(amount), "serial_no": serial_no},
+                    {"holding_id": req.holding_id, "amount": float(amount), "serial_no": serial_no,
+                     "account_id": int(_acc["id"]), "balance_after": float(balance_after)},
                     "success", cur=cur,
                 )
             conn.commit()
@@ -357,10 +382,14 @@ def redeem(req: RedeemReq, uid: int = Depends(current_uid),
                 pass
             return fail(f"赎回失败：{exc}", code=ERR.REDEEM_FAILED, action="redeem")
 
+    _bal_msg = (f"，资金已退回账户，余额 {float(balance_after):.2f} 元"
+                if balance_after is not None else "，资金已退回账户")
     return {
         "ok": True,
         "serial_no": serial_no,
         "product": holding["product_name"],
         "amount": float(amount),
-        "message": f"已赎回「{holding['product_name']}」{float(amount):.2f} 元，流水号 {serial_no}",
+        "balance_after": float(balance_after) if balance_after is not None else None,
+        "message": (f"已赎回「{holding['product_name']}」{float(amount):.2f} 元{_bal_msg}，"
+                    f"流水号 {serial_no}"),
     }
