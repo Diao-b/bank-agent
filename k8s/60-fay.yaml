@@ -1,0 +1,163 @@
+# ============================================================================
+# Fay 数字人（二期）—— Fay 后端 + Live2D 前端
+#
+#   5173  Live2D 页面        -> NodePort 30517  http://<master公网IP>:30517
+#   5000  Fay 管理后台/音频   -> NodePort 30500  http://<master公网IP>:30500
+#   10002 WebSocket(数字人)  -> NodePort 32100  ws://<master公网IP>:32100
+#   5010  内置 MCP 服务       -> 仅 ClusterIP，不对外
+#
+# ★ 为什么用 NodePort 而不是 Ingress：
+#   Live2D 的 dist 构建时 base='/'，页面里是 /assets/xx.js、/Core/xx.js 这种
+#   绝对路径，必须挂在根路径；而根路径已经被 bank-backend 占用。
+#   WebSocket(10002) 走 Ingress 还要额外配 Traefik 的 WS 注解，不如 NodePort 直给。
+#
+# ★ FAY_PUBLIC_URL 必须填「浏览器能访问到的地址」：
+#   Fay 下发的音频地址是 ${FAY_PUBLIC_URL}/audio/xxx.wav，填错 = 数字人动但不出声。
+#   这里默认用 master 公网 IP + 30500，换了 IP/端口记得同步改。
+#
+# ★ 安全组需要放行：30500、30517、32100（TCP，入方向 0.0.0.0/0）
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-fay
+  namespace: bank-agent
+  labels:
+    app: bank-fay
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bank-fay
+  template:
+    metadata:
+      labels:
+        app: bank-fay
+    spec:
+      # ★ 一期先钉在 master：镜像 ~1.5GB，钉一台只需要在一个节点导镜像；
+      #   而且 TTS/LLM 要出公网，master 的出口最可控。
+      #   要漂到 worker 就注掉这两行，并记得给 worker 也导 fay.tar。
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master
+      # ★ 容器以 uid 10001 运行，而 emptyDir 建出来默认是 root:root，
+      #   不设 fsGroup 的话 Fay 写 logs/ 会 Permission denied 直接崩。
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: fay
+          image: fay:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: live2d
+              containerPort: 5173
+            - name: web
+              containerPort: 5000
+            - name: ws
+              containerPort: 10002
+            - name: mcp
+              containerPort: 5010
+          env:
+            # ★ 浏览器访问 Fay 音频的地址（改了公网 IP / NodePort 必须同步）
+            - name: FAY_PUBLIC_URL
+              value: "http://118.31.61.128:30500"
+            - name: FAY_GPT_BASE_URL
+              value: "https://api.deepseek.com/v1"
+            - name: FAY_GPT_MODEL
+              value: "deepseek-chat"
+            # DeepSeek Key 复用 bank-secret，不在这里明文写
+            - name: FAY_GPT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bank-secret
+                  key: DEEPSEEK_API_KEY
+            - name: TZ
+              value: Asia/Shanghai
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          # 5000 起来就说明 Flask 控制面板就绪；10002 随后才监听
+          readinessProbe:
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 10002
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 5
+          volumeMounts:
+            # 记忆/日志不落镜像层；要长期保留改成 PVC
+            - name: memory
+              mountPath: /app/fay/memory
+            - name: logs
+              mountPath: /app/fay/logs
+            - name: cache
+              mountPath: /app/fay/cache_data
+      volumes:
+        - name: memory
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+---
+# 集群内访问用的稳定入口（以后 backend 要调 Fay 的控制接口就走它）
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-fay
+  namespace: bank-agent
+  labels:
+    app: bank-fay
+spec:
+  type: ClusterIP
+  selector:
+    app: bank-fay
+  ports:
+    - name: live2d
+      port: 5173
+      targetPort: 5173
+    - name: web
+      port: 5000
+      targetPort: 5000
+    - name: ws
+      port: 10002
+      targetPort: 10002
+    - name: mcp
+      port: 5010
+      targetPort: 5010
+---
+# 对外暴露：Live2D 页面 / Fay 管理面板 / 数字人 WebSocket
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-fay-nodeport
+  namespace: bank-agent
+  labels:
+    app: bank-fay
+spec:
+  type: NodePort
+  selector:
+    app: bank-fay
+  ports:
+    - name: live2d
+      port: 5173
+      targetPort: 5173
+      nodePort: 30517
+    - name: web
+      port: 5000
+      targetPort: 5000
+      nodePort: 30500
+    - name: ws
+      port: 10002
+      targetPort: 10002
+      nodePort: 32100

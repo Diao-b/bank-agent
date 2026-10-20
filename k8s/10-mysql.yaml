@@ -1,0 +1,151 @@
+# ============================================================================
+# 10 · MySQL 8.0（有状态，唯一真值库）
+#
+# ★ 必须钉在 k3s-master：worker 只有 2G，MySQL 一启动就会把节点吃到 OOM。
+# ★ local-path 的 PV 带 nodeAffinity，nodeSelector 与它必须是同一节点，
+#   否则 Pod 会一直 Pending（不是"跑起来但数据丢了"，是根本起不来）。
+# ★ 参数按 2C4G 节点调优：buffer pool 192M + 关闭 performance_schema，
+#   稳态约 380–480Mi；首次初始化（mysqld --initialize）峰值 450–500Mi，768Mi 留了余量。
+#   实测集群 Allocatable 6.94GiB / 已用 2.22GiB，比早期按 1.5G 假设宽裕得多。
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-mysql
+  namespace: bank-agent
+  labels:
+    app: bank-mysql
+spec:
+  type: ClusterIP
+  selector:
+    app: bank-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+# StatefulSet 要求一个 headless Service 作为 serviceName（Pod DNS: bank-mysql-0.bank-mysql-headless）
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-mysql-headless
+  namespace: bank-agent
+spec:
+  clusterIP: None
+  selector:
+    app: bank-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bank-mysql
+  namespace: bank-agent
+spec:
+  serviceName: bank-mysql-headless
+  replicas: 1                     # 单实例。多副本需要主从/Group Replication，这里不做
+  selector:
+    matchLabels:
+      app: bank-mysql
+  template:
+    metadata:
+      labels:
+        app: bank-mysql
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master   # ★ 强制主节点
+      securityContext:
+        fsGroup: 999                # mysql 官方镜像的 uid/gid
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          # 节点拉不到 DockerHub，镜像由 build-and-import.sh 提前 ctr import。
+          # Never = 缺失时立刻 ImagePullBackOff 暴露问题，而不是卡在慢慢重试。
+          imagePullPolicy: Never
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+            # 容器默认 UTC，账期/订阅扣款/流水分日全靠它，必须钉东八区
+            - --default-time-zone=+08:00
+            # ---- 内存与 IO 调优（实测集群内存 6.94GiB / 已用 2.22GiB，有余量）----
+            # buffer pool 从 64M 提到 192M：账单聚合、持仓联表这些查询会明显变快。
+            # 别再往上加：limit 768Mi 里还要留连接缓冲、排序区、临时表。
+            - --innodb-buffer-pool-size=192M
+            # 2 核机器默认会开多个 buffer pool 实例，192M 拆开会碎，固定 1 个
+            - --innodb-buffer-pool-instances=1
+            - --performance-schema=OFF
+            - --max-connections=120
+            - --skip-name-resolve
+            - --innodb-redo-log-capacity=128M
+            # 2 = 每秒刷盘，牺牲极端断电时的最后 1s 事务，换写性能
+            - --innodb-flush-log-at-trx-commit=2
+            # 慢查询留痕，便于以后调优（写进数据目录，开销很低）
+            - --slow-query-log=ON
+            - --long-query-time=2
+            - --slow-query-log-file=/var/lib/mysql/slow.log
+          env:
+            # ★ 密码只有 bank-secret/DB_PASSWORD 一个来源，与两个业务容器共用
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bank-secret
+                  key: DB_PASSWORD
+            - name: MYSQL_DATABASE
+              value: bank_agent
+            - name: TZ
+              valueFrom:
+                configMapKeyRef:
+                  name: bank-config
+                  key: TZ
+          ports:
+            - name: mysql
+              containerPort: 3306
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 300m
+            limits:
+              memory: 768Mi
+              cpu: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          # startupProbe 给首次初始化（建系统表 + 临时实例）留足时间
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            periodSeconds: 5
+            failureThreshold: 60      # 最多等 5 分钟
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            periodSeconds: 20
+            failureThreshold: 5
+            timeoutSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

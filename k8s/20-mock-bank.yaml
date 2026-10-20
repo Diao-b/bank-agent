@@ -1,0 +1,154 @@
+# ============================================================================
+# 20 · mock-bank（银行核心 API，:8003）
+#
+# 无状态，但**不对外暴露**：只有 backend 通过 http://bank-mock:8003 内部调用。
+# Ingress 里没有它的路由，这是刻意的（banking 核心不该有公网入口）。
+#
+# ★ 调度：**交给 K8s 自动调度**（无状态、无 PVC，这是本项目唯一能真正漂移的组件）
+#   只保留一条 soft 偏好：尽量别落 4G 主节点，给 MySQL + backend 留内存。
+#   Worker 全不可用时会自动回落 master，不会因为"偏好"起不来。
+#
+#   代价（仅当它落在 Worker 时）：backend(master) → mock-bank(worker) 走公网 VXLAN，
+#   每次调用多 20~50ms，大包可能被 MTU 丢弃（排查见 README §4.1）。
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-mock
+  namespace: bank-agent
+  labels:
+    app: bank-mock
+spec:
+  type: ClusterIP
+  selector:
+    app: bank-mock
+  ports:
+    - name: http
+      port: 8003
+      targetPort: 8003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-mock
+  namespace: bank-agent
+  labels:
+    app: bank-mock
+spec:
+  replicas: 1                       # 单副本即可；扩容前先看 Worker 剩余内存（2G 节点约剩 1.1G）
+  strategy:
+    type: Recreate                  # 单副本场景下避免滚动更新时新旧实例并存
+  selector:
+    matchLabels:
+      app: bank-mock
+  template:
+    metadata:
+      labels:
+        app: bank-mock
+    spec:
+      # ★ 没有 nodeSelector —— 这是刻意的。
+      #   mock-bank 无状态、无 PVC，节点挂了 K8s 会自动在别的节点重建它。
+      #   下面只是"软偏好"：优先非 master 节点（把轻负载推给 Worker，给主节点省内存），
+      #   preferred 不满足也不会 Pending，会正常回落到 master。
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: ["k3s-master"]
+      initContainers:
+        # 等 init Job 把业务表建完（表不存在会抛 ProgrammingError，继续等）
+        - name: wait-schema
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import os, sys, time, pymysql
+              for i in range(150):
+                  try:
+                      conn = pymysql.connect(
+                          host=os.environ["DB_HOST"], port=int(os.environ["DB_PORT"]),
+                          user=os.environ["DB_USER"], password=os.environ["DB_PASSWORD"],
+                          database=os.environ["DB_NAME"],
+                      )
+                      cur = conn.cursor()
+                      cur.execute("SELECT 1 FROM accounts LIMIT 1")
+                      cur.fetchall()
+                      conn.close()
+                      print("schema is ready")
+                      sys.exit(0)
+                  except pymysql.err.ProgrammingError as exc:
+                      print("waiting for schema (%d): %s" % (i, exc))
+                      time.sleep(2)
+                  except Exception as exc:
+                      print("waiting for mysql (%d): %s" % (i, exc))
+                      time.sleep(2)
+              sys.exit(1)
+          envFrom:
+            - configMapRef:
+                name: bank-config
+            - secretRef:
+                name: bank-secret
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+      containers:
+        - name: mock-bank
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          # ★ --host 0.0.0.0 不能省：uvicorn 默认只绑 127.0.0.1，Service 会打不进来
+          command:
+            - python
+            - -m
+            - uvicorn
+            - mock_bank.main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8003"
+            - --workers
+            - "1"
+            - --log-level
+            - warning
+          ports:
+            - name: http
+              containerPort: 8003
+          envFrom:
+            - configMapRef:
+                name: bank-config
+            - secretRef:
+                name: bank-secret
+          # /api/health 是现成的匿名探针（只回 db 是否 up，不泄露账户数据）
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests:
+              memory: 192Mi
+              cpu: 150m
+            limits:
+              memory: 384Mi
+              cpu: 800m

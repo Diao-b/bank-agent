@@ -1,0 +1,181 @@
+# ============================================================================
+# 30 · backend（Agent + 静态 SPA，:8178）
+#
+# ★ 必须单副本（replicas: 1）：
+#   - LangGraph checkpoint 是 SQLite（/data/bank.db），多进程写同一文件会锁冲突/损坏
+#   - 会话 driver 注册表与 SSE 流是**进程内状态**，跨副本会"确认/取消接不上"
+#   二期把 checkpointer 换成 PostgreSQL 后才可扩副本（见 docs/deploy_plan.md §6.2）
+#
+# ★ 静态前端直接由它出（app.mount("/", StaticFiles)），不需要额外的 nginx 容器。
+#   前端是 #/chat hash 路由，Ingress 一条 "/" 就够，无需 fallback rewrite。
+# ============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bank-backend-data
+  namespace: bank-agent
+  labels:
+    app: bank-backend
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path      # 会延迟到 Pod 调度后才在 master 本地盘创建
+  resources:
+    requests:
+      storage: 1Gi                   # 同时装 knowledge / data / bank.db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-backend
+  namespace: bank-agent
+  labels:
+    app: bank-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: bank-backend
+  ports:
+    - name: http
+      port: 8178
+      targetPort: 8178
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-backend
+  namespace: bank-agent
+  labels:
+    app: bank-backend
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate                  # RWO 卷不能被新旧两个 Pod 同时挂
+  selector:
+    matchLabels:
+      app: bank-backend
+  template:
+    metadata:
+      labels:
+        app: bank-backend
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master   # ★ 强制主节点（有状态 + 核心业务）
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      terminationGracePeriodSeconds: 30      # 留时间收尾正在写的 SSE 连接
+      initContainers:
+        # ① 把镜像里的知识库/外观配置"灌种"到 PVC（只补不覆盖）
+        - name: seed-data
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /seed/knowledge /seed/data /seed/state
+              # -n = no-clobber：后台在线编辑过的文档不能被镜像版本盖回去
+              # ★ 源路径是 /docs/knowledge（不是 /app/docs/knowledge）：
+              #   utils/knowledge.py 取的是 BASE_DIR.parent/docs/knowledge
+              cp -a -n /docs/knowledge/. /seed/knowledge/ 2>/dev/null || true
+              cp -a -n /app/data/. /seed/data/ 2>/dev/null || true
+              echo "seed done: knowledge=$(ls -1 /seed/knowledge | wc -l) files"
+          volumeMounts:
+            - name: data
+              mountPath: /seed
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 20m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+        # ② 等 mock-bank 就绪（backend 启动时只打印状态，不阻塞；但首屏会打 502）
+        - name: wait-mock
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import os, sys, time, urllib.request
+              url = os.environ["BANK_API_BASE"].rstrip("/") + "/api/health"
+              for i in range(120):
+                  try:
+                      with urllib.request.urlopen(url, timeout=3) as resp:
+                          if resp.status == 200:
+                              print("mock-bank is ready")
+                              sys.exit(0)
+                  except Exception as exc:
+                      print("waiting mock-bank (%d): %s" % (i, exc))
+                  time.sleep(2)
+              sys.exit(1)
+          envFrom:
+            - configMapRef:
+                name: bank-config
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 20m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+      containers:
+        - name: backend
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          command: ["python", "run_server.py"]
+          ports:
+            - name: http
+              containerPort: 8178
+          envFrom:
+            - configMapRef:
+                name: bank-config
+            - secretRef:
+                name: bank-secret
+          volumeMounts:
+            # ★ 路径是 /docs/knowledge 而不是 /app/docs/knowledge：
+            #   utils/knowledge.py / routes/admin.py 取 BASE_DIR.parent/docs/knowledge。
+            #   挂错位置不报错，只会"知识库空白 + RAG 检索不到东西"。
+            - name: data
+              mountPath: /docs/knowledge
+              subPath: knowledge        # 后台「知识库」页的在线编辑落在 PVC
+            - name: data
+              mountPath: /app/data
+              subPath: data             # appearance.json 等运行期配置
+            - name: data
+              mountPath: /data
+              subPath: state            # CHECKPOINT_PATH=/data/bank.db
+          # 启动时 knowledge_warmup 要 ~11s，startupProbe 给足 150s
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # backend 没有 /health 端点，用 TCP 探测避免耦合静态资源
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 300m
+            limits:
+              memory: 768Mi
+              cpu: 1500m
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bank-backend-data

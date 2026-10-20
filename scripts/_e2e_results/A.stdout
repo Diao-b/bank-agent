@@ -1,0 +1,11 @@
+1_gate	{"url":"http://127.0.0.1:8178/login","inputs":[{"type":"text","ph":"请输入用户名"},{"type":"password","ph":"请输入密码"}],"btns":["登 录","注 册","隐藏","隐藏","立即登录","游客模式快速体验","返回"],"body":"登 录 注 册 AI BANKING AGENT 小微 · AI 银行助手 每一条消息，都有安全的回响 01 怎么使用 开口即办 不用研究菜单：直接说出需求，例如\"给妈妈转 2000\"，小微听懂就办。 01 · 怎么使用 开口即办 不用研究菜单：直接说出需求，例如\"给妈妈转 2000\"，小微听懂就办。 02 智能理解 听懂意图 AI 解析你的自然语言，自动识别转账、查询、理财等需求并补齐要素。 02 · 智能理解 听懂意图 AI 解析你的自然语言，自动识别转账、查询、理财等需求并补齐要素。 03 功能 · 随问随答 实时查账 直连银行数据：余额、账单、持仓实时查询，只读操作即时完成。 03 · 功能 · 随问随答 实时查账 直连银行数据：余额、账单、持仓实时查询，只读操作即时完成。 04 功能 · 有据可依 行情同步 经 MCP 协议同步外部实时行情与资讯，让每一个回答都有据可依。 04 "}
+1_hasForm	true
+2_clickLogin	{"found":1,"clicked":"立即登录"}
+2_wrongPass	{"errMatches":["大额双要素核验、密码错 3 次自动锁定、每一笔操作留痕可追溯。","大额双要素核验、密码错 3 次自动锁定、每一笔操作留痕可追溯。","用户名或密码错误（还可尝试 4 次）","密码","演示账号：user1 / user2，密码均为 123456（也可注册新账号）"],"stillGate":true,"dialogs":"n/a"}
+3_loginResult	{"mode":"real","atChat":true,"greet":"你好"}
+4_afterRefresh	{"stillReal":true,"atChat":true}
+5_deepLinkCards	{"hash":"##cards","showsCards":true,"stillReal":true}
+6_clickLogout	{"found":0}
+6_afterLogout	{"backToGate":false,"stillReal":true}
+7_adminNoAuth	{"url":"http://127.0.0.1:8178/chat##cards","hasAdminContent":false,"showsGate":false}
+DONE	ok

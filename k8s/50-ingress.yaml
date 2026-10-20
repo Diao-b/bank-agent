@@ -1,0 +1,61 @@
+# ============================================================================
+# 50 · Ingress（复用 K3s 自带的 Traefik，不再起 nginx）
+#
+# 访问方式：http://118.31.61.128/
+#   - 不写 host，匹配任意 Host，直接用 IP 访问（不需要域名 / 证书）
+#   - 安全组只需放行 80（443 留到以后上证书再说）
+#
+# ★ mock-bank 刻意不在此暴露：银行核心 API 只能被 backend 经 Service 名内调。
+# ★ 前端不做独立镜像/容器：静态文件（index.html / admin.html / login.html）就在
+#   backend 镜像里，由 FastAPI 的 StaticFiles 在 8178 上直接托管。
+# ★ 前端是 #/chat hash 路由，不需要 SPA fallback rewrite。
+# ★ SSE（/api/chat 流式回复）：Traefik 默认不缓冲、不压缩，可直接透传。
+#   若以后加了全局 gzip/compress 中间件，必须对 /api 排除 —— 压缩会攒包，
+#   前端表现为"一直正在输入"。
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bank-agent
+  namespace: bank-agent
+  annotations:
+    # K3s Traefik 的 HTTP 入口叫 web（80）
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          # /api 与 / 指向同一个 Service（同一个 Pod）。分开写是为了让路由自解释：
+          # /api  = 后端接口（含 SSE 长连接）
+          # /     = 静态页面（backend 的 StaticFiles 托管）
+          # Traefik 按最长前缀匹配，所以 /api/* 一定命中第一条。
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: bank-backend
+                port:
+                  number: 8178
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bank-backend
+                port:
+                  number: 8178
+---
+# ---------------------------------------------------------------------------
+# 二期（数字人）预留，不要现在 apply —— 它依赖 bank-fay 这个 Service 存在，
+# 提前创建会让 Ingress 报 "service not found" 并让整条路由不生效。
+#
+# 等 fay 的 Deployment 就绪后，把下面这段合并进上面的 rules：
+#
+#   - path: /fay          → bank-fay:5173   (Live2D 前端)
+#   - path: /fay-api      → bank-fay:5000   (Fay HTTP：transparent-pass 等)
+#   - path: /fay-ws       → bank-fay:10002  (WebSocket，需透传 Upgrade)
+#
+# WebSocket 在 Traefik 下无需特殊注解（自动识别 101），但要确认：
+#   1) 浏览器连的是 ws://<公网IP>/fay-ws 而不是 ws://...:10002（NodePort 不可取）
+#   2) 后端 ConfigMap 的 FAY_WS_URL 给的是**浏览器可达**的地址
+# ---------------------------------------------------------------------------

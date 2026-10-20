@@ -1,0 +1,49 @@
+# ============================================================================
+# 构建上下文排除清单
+# ★ bank.db 有 100MB+（含 WAL），一旦漏排镜像会膨胀到不可接受，且把历史会话
+#   中间态打进镜像层（既是体积问题也是数据泄露问题）。
+# ============================================================================
+
+# 机密与本地环境
+.env
+.env.*
+!.env.example
+.venv/
+.idea/
+
+# 运行期数据（绝不能进镜像）
+bank.db
+bank.db-*
+*.db-wal
+*.db-shm
+
+# 测试 / 审计产物
+_reports/
+.test_out/
+.shots/
+_tmp_*.py
+*.log
+*.bak
+*.bak.*
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# VCS
+.git/
+.gitignore
+
+# 体积大且运行时不读的文档目录（★ 不要整体排除 docs/：
+#   docs/knowledge 是 RAG 语料，也是 PVC 首次灌入的种子，排掉会导致知识库空白）
+docs/_deleted_kb_docs/
+docs/vendor/
+docs/*.html
+
+# 前端历史备份（web/vendor 是运行时依赖，不能排）
+web/*.bak*
+
+# 测试代码
+tests/
+scripts/_*

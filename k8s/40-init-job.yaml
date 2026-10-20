@@ -1,0 +1,114 @@
+# ============================================================================
+# 40 · 数据库初始化 Job（一次性）
+#
+# ★★ 这个 Job 会执行 sql/init.sql，里面有 11 条 DROP TABLE ★★
+#    只在**全新空库**上跑。已有数据的环境绝对不能 apply（会被清空）。
+#    Job 内已内置保护：若 bank_agent.schema_migrations 已有记录，直接拒绝执行。
+#
+# ★ Job 的 spec 不可变：重复部署前先
+#    k3s kubectl -n bank-agent delete job bank-db-init --ignore-not-found
+#    （build-and-import.sh 的 DEPLOY=1 已自动处理）
+# ============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bank-db-init
+  namespace: bank-agent
+  labels:
+    app: bank-db-init
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 900      # 成功 15 分钟后自动清理，避免堆积
+  template:
+    metadata:
+      labels:
+        app: bank-db-init
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master     # ★ 与 MySQL 同节点，避免跨节点连接
+      initContainers:
+        # 等 MySQL 真正可连接（StatefulSet Ready 不代表 root 密码已就绪）
+        - name: wait-mysql
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import os, sys, time, pymysql
+              for i in range(150):
+                  try:
+                      pymysql.connect(
+                          host=os.environ["DB_HOST"], port=int(os.environ["DB_PORT"]),
+                          user=os.environ["DB_USER"], password=os.environ["DB_PASSWORD"],
+                      ).close()
+                      print("mysql is reachable")
+                      sys.exit(0)
+                  except Exception as exc:
+                      print("waiting for mysql (%d): %s" % (i, exc))
+                      time.sleep(2)
+              sys.exit(1)
+          envFrom:
+            - configMapRef:
+                name: bank-config
+            - secretRef:
+                name: bank-secret
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+      containers:
+        - name: init
+          image: bank-agent:1.0
+          imagePullPolicy: Never
+          command:
+            - sh
+            - -c
+            - |
+              set -u
+              echo "==> 前置检查：确认是空库"
+              python - <<'PY'
+              import os, sys, pymysql
+              try:
+                  conn = pymysql.connect(
+                      host=os.environ["DB_HOST"], port=int(os.environ["DB_PORT"]),
+                      user=os.environ["DB_USER"], password=os.environ["DB_PASSWORD"],
+                      database=os.environ["DB_NAME"],
+                  )
+                  cur = conn.cursor()
+                  cur.execute("SELECT COUNT(*) FROM schema_migrations")
+                  n = cur.fetchone()[0]
+                  conn.close()
+                  print("schema_migrations rows = %d" % n)
+                  sys.exit(9 if n > 0 else 0)
+              except pymysql.err.ProgrammingError:
+                  print("schema_migrations 不存在 → 空库，继续初始化")
+                  sys.exit(0)
+              except Exception as exc:
+                  print("前置检查跳过（%s），继续" % exc)
+                  sys.exit(0)
+              PY
+              rc=$?
+              if [ "$rc" -eq 9 ]; then
+                echo "REFUSE: schema_migrations 已有记录，init.sql 会 DROP 现有表，已中止"
+                exit 1
+              fi
+              echo "==> 执行 init_db.py（init.sql + 未应用的 upgrade_*.sql）"
+              python init_db.py
+              echo "==> 初始化完成"
+          envFrom:
+            - configMapRef:
+                name: bank-config
+            - secretRef:
+                name: bank-secret
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 384Mi
+              cpu: 500m
